@@ -42,7 +42,7 @@ def should_skip(rel_posix: str, include_internal: bool) -> bool:
     return False
 
 
-def iter_files(base_dir: Path, include_internal: bool):
+def iter_all_files(base_dir: Path, include_internal: bool):
     for p in base_dir.rglob("*"):
         if not p.is_file():
             continue
@@ -52,33 +52,72 @@ def iter_files(base_dir: Path, include_internal: bool):
         yield p, rel
 
 
-def build_update_zip(base_dir: Path, out_zip: Path, include_internal: bool):
+def load_prev_manifest_map(prev_manifest_path: str) -> tuple[dict[str, str], set[str]]:
+    if not prev_manifest_path:
+        return {}, set()
+
+    with open(prev_manifest_path, "r", encoding="utf-8", errors="replace") as f:
+        m = json.load(f)
+
+    mp: dict[str, str] = {}
+    prev_paths: set[str] = set()
+
+    for it in m.get("files", []) or []:
+        if not isinstance(it, dict):
+            continue
+        rel = it.get("path")
+        sha = it.get("sha256")
+        if isinstance(rel, str) and isinstance(sha, str) and rel and sha:
+            mp[rel] = sha.lower()
+            prev_paths.add(rel)
+
+    # if prev manifest had "delete" it's not needed here
+    return mp, prev_paths
+
+
+def build_maps(base_dir: Path, include_internal: bool) -> tuple[dict[str, dict], set[str]]:
+    # returns: path -> {sha256,size,abs_path}, plus set(paths)
+    mp: dict[str, dict] = {}
+    paths: set[str] = set()
+
+    for p, rel in iter_all_files(base_dir, include_internal=include_internal):
+        sha = sha256_file(str(p)).lower()
+        mp[rel] = {"sha256": sha, "size": p.stat().st_size, "abs": p}
+        paths.add(rel)
+
+    return mp, paths
+
+
+def write_zip(files_to_pack: list[tuple[Path, str]], out_zip: Path):
     if out_zip.exists():
         out_zip.unlink()
 
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for p, rel in iter_files(base_dir, include_internal=include_internal):
-            z.write(p, arcname=rel)
+        for abs_path, rel in files_to_pack:
+            z.write(abs_path, arcname=rel)
 
 
-def build_manifest(base_dir: Path, out_manifest: Path, version: str, zip_name: str, include_internal: bool):
-    files = []
-    for p, rel in iter_files(base_dir, include_internal=include_internal):
-        files.append({
-            "path": rel,
-            "sha256": sha256_file(str(p)),
-            "size": p.stat().st_size,
-        })
-
+def write_manifest(
+    out_manifest: Path,
+    version: str,
+    zip_name: str,
+    include_internal: bool,
+    files: list[dict],
+    delete_list: list[str],
+    delta: bool,
+):
     files.sort(key=lambda x: x["path"])
+    delete_list = sorted(delete_list)
 
     manifest = {
         "version": version,
         "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "package": zip_name,
         "include_internal": include_internal,
+        "delta": delta,
         "files": files,
+        "delete": delete_list,
     }
 
     out_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +133,7 @@ def main():
     ap.add_argument("--include-internal", action="store_true", help="Include _internal in update.zip/manifest")
     ap.add_argument("--zip-name", default="update.zip")
     ap.add_argument("--manifest-name", default="manifest.json")
+    ap.add_argument("--prev-manifest", default="", help="Path to previous manifest.json (optional)")
     args = ap.parse_args()
 
     base_dir = Path(args.input).resolve()
@@ -101,8 +141,40 @@ def main():
     zip_path = out_dir / args.zip_name
     manifest_path = out_dir / args.manifest_name
 
-    build_update_zip(base_dir, zip_path, include_internal=args.include_internal)
-    build_manifest(base_dir, manifest_path, version=args.version, zip_name=args.zip_name, include_internal=args.include_internal)
+    prev_map, prev_paths = load_prev_manifest_map(args.prev_manifest)
+
+    new_map, new_paths = build_maps(base_dir, include_internal=args.include_internal)
+
+    delta_mode = bool(args.prev_manifest)
+
+    # changed/new files
+    changed: list[str] = []
+    for rel, info in new_map.items():
+        sha = info["sha256"]
+        if prev_map.get(rel) != sha:
+            changed.append(rel)
+
+    # deleted files (were in prev, not in new)
+    deleted = sorted(list(prev_paths - new_paths)) if delta_mode else []
+
+    # what to pack into zip
+    if delta_mode:
+        to_pack = [(new_map[rel]["abs"], rel) for rel in sorted(changed)]
+        files_list = [{"path": rel, "sha256": new_map[rel]["sha256"], "size": new_map[rel]["size"]} for rel in sorted(changed)]
+    else:
+        to_pack = [(new_map[rel]["abs"], rel) for rel in sorted(new_map.keys())]
+        files_list = [{"path": rel, "sha256": new_map[rel]["sha256"], "size": new_map[rel]["size"]} for rel in sorted(new_map.keys())]
+
+    write_zip(to_pack, zip_path)
+    write_manifest(
+        out_manifest=manifest_path,
+        version=args.version,
+        zip_name=args.zip_name,
+        include_internal=args.include_internal,
+        files=files_list,
+        delete_list=deleted,
+        delta=delta_mode,
+    )
 
     print(str(zip_path))
     print(str(manifest_path))
