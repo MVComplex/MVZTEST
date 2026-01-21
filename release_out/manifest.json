@@ -1,0 +1,175 @@
+{
+  "version": "v1.4",
+  "created_utc": "2026-01-21T16:01:13Z",
+  "package": "update.zip",
+  "include_internal": false,
+  "delta": false,
+  "files": [
+    {
+      "path": "MVZ.exe",
+      "sha256": "19586f66ef743aa3887ec7bfeca1fa4ec00353d9867525cb4aca927604af0b80",
+      "size": 2769276
+    },
+    {
+      "path": "bin/WinDivert.dll",
+      "sha256": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+      "size": 47616
+    },
+    {
+      "path": "bin/WinDivert64.sys",
+      "sha256": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
+      "size": 94144
+    },
+    {
+      "path": "bin/cygwin1.dll",
+      "sha256": "103104a52e5293ce418944725df19e2bf81ad9269b9a120d71d39028e821499b",
+      "size": 2954293
+    },
+    {
+      "path": "bin/quic_initial_www_google_com.bin",
+      "sha256": "f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a",
+      "size": 1200
+    },
+    {
+      "path": "bin/tls_clienthello_4pda_to.bin",
+      "sha256": "eefeaf09dde8d69b1f176212541f63c68b314a33a335eced99a8a29f17254da8",
+      "size": 284
+    },
+    {
+      "path": "bin/tls_clienthello_max_ru.bin",
+      "sha256": "e4a94cec50b3c048eb988a513ee28191e4d7544dd5f98a9bf94f37ee02d2568e",
+      "size": 654
+    },
+    {
+      "path": "bin/tls_clienthello_www_google_com.bin",
+      "sha256": "936c2bee4cfb80aa3c426b2dcbcc834b3fbcd1adb17172959dc569c73a14275c",
+      "size": 681
+    },
+    {
+      "path": "bin/winws.exe",
+      "sha256": "31d68a175abebab19f7f39bf6d0845ec5c18ab653eeeea6ee830b22d799b7e55",
+      "size": 204288
+    },
+    {
+      "path": "discord_rpc.py",
+      "sha256": "31edd11a33fccce67eb7a92aa22e36ef50d6ecb7ed07bd59465259877b747c0f",
+      "size": 4313
+    },
+    {
+      "path": "general (ALT11).bat",
+      "sha256": "75485b4aa44ec856762964d84b4a6993e005cb9d962cb5b2eb417cb7a130f367",
+      "size": 3270
+    },
+    {
+      "path": "ipset-all.txt",
+      "sha256": "19123a22bf1108815c07bda3cda8df282b30bd63e4939949928969c0fd195873",
+      "size": 18
+    },
+    {
+      "path": "ipset-all.txt.backup",
+      "sha256": "826a5737dfc59676d6ba395d3515b755284570c01d6654d73a216aca8a21e7d4",
+      "size": 210384
+    },
+    {
+      "path": "ipset-exclude.txt",
+      "sha256": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
+      "size": 135
+    },
+    {
+      "path": "list-exclude.txt",
+      "sha256": "229499a77dfbe42e7e3e7de0123fcc4a57374aaf3e17fc03345ba2d833fe454d",
+      "size": 302
+    },
+    {
+      "path": "list-general.txt",
+      "sha256": "c621c481e5645eb3d60e5bafc466cde117f4df3b897313b08de07d9f1badd9cf",
+      "size": 4236
+    },
+    {
+      "path": "list-google.txt",
+      "sha256": "36ec86bbe19b9e5815d807d6b25dffd01bdf69e9cf6c05d7cf60cd7c9bf036d8",
+      "size": 362
+    },
+    {
+      "path": "lists/ipset-all.txt",
+      "sha256": "19123a22bf1108815c07bda3cda8df282b30bd63e4939949928969c0fd195873",
+      "size": 18
+    },
+    {
+      "path": "lists/ipset-all.txt.backup",
+      "sha256": "826a5737dfc59676d6ba395d3515b755284570c01d6654d73a216aca8a21e7d4",
+      "size": 210384
+    },
+    {
+      "path": "lists/ipset-exclude.txt",
+      "sha256": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
+      "size": 135
+    },
+    {
+      "path": "lists/list-exclude.txt",
+      "sha256": "229499a77dfbe42e7e3e7de0123fcc4a57374aaf3e17fc03345ba2d833fe454d",
+      "size": 302
+    },
+    {
+      "path": "lists/list-general.txt",
+      "sha256": "c621c481e5645eb3d60e5bafc466cde117f4df3b897313b08de07d9f1badd9cf",
+      "size": 4236
+    },
+    {
+      "path": "lists/list-google.txt",
+      "sha256": "36ec86bbe19b9e5815d807d6b25dffd01bdf69e9cf6c05d7cf60cd7c9bf036d8",
+      "size": 362
+    },
+    {
+      "path": "mvz-round.ico",
+      "sha256": "7cba44724c8cba643ca9fef55cbabd7637c31aeea9ca2a2e616b4ffb18da40c4",
+      "size": 163436
+    },
+    {
+      "path": "mvz-round.png",
+      "sha256": "889ae9d138b650a923e8dfcab43b3b2018e33dc688743f4381fa85d0ae2843da",
+      "size": 81663
+    },
+    {
+      "path": "mvz_logo.png",
+      "sha256": "c3337068915d61adcbbbca6c70ef0fab229ab51eeace31bef2c52fafcb17d930",
+      "size": 107815
+    },
+    {
+      "path": "mvz_logo_toxic.png",
+      "sha256": "3d7987edb258c6c928f4a9e206419f0cd39b9bf4fecfbb5438a84441d50e21c0",
+      "size": 112008
+    },
+    {
+      "path": "service.bat",
+      "sha256": "349d89bc71cfd1d087105f3558817460d5e424f59a28adb42f76d66bf374f649",
+      "size": 25698
+    },
+    {
+      "path": "ui/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "ui/main_window.py",
+      "sha256": "ea0af5e714440ad2b6aff666a7e84fea9a3ac2bea239c9f225a59aa2e38165d9",
+      "size": 66584
+    },
+    {
+      "path": "ui/mvz-round.ico",
+      "sha256": "7cba44724c8cba643ca9fef55cbabd7637c31aeea9ca2a2e616b4ffb18da40c4",
+      "size": 163436
+    },
+    {
+      "path": "ui/mvz_logo.png",
+      "sha256": "c3337068915d61adcbbbca6c70ef0fab229ab51eeace31bef2c52fafcb17d930",
+      "size": 107815
+    },
+    {
+      "path": "ui/mvz_updater.py",
+      "sha256": "b906f9f250cb86c27a8a8666ba3e7f617e588a03080644652e85ed66179f739d",
+      "size": 13164
+    }
+  ],
+  "delete": []
+}

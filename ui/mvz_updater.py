@@ -1,10 +1,10 @@
-# mvz_updater.py
 from __future__ import annotations
 
 import os
 import sys
 import json
 import time
+import ssl
 import hashlib
 import shutil
 import tempfile
@@ -17,7 +17,7 @@ from typing import Optional, Callable, Any
 import urllib.request
 import urllib.error
 
-ProgressCb = Callable[[str, int], None]  # (label, percent)
+ProgressCb = Callable[[str, int], None]
 
 
 @dataclass
@@ -26,6 +26,28 @@ class UpdateResult:
     restarted: bool
     changed_files: list[str]
     new_version: str
+
+
+LOG_PATH = os.path.join(tempfile.gettempdir(), "mvz_updater.log")
+
+
+def _log(msg: str) -> None:
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_PATH, "a", encoding="utf-8", errors="ignore") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
+# === ПОЛНОЕ ОТКЛЮЧЕНИЕ SSL ПРОВЕРКИ ===
+# Создаём глобальный контекст БЕЗ проверки сертификатов
+_SSL_CONTEXT = ssl._create_unverified_context()
+
+
+def _urlopen(req: urllib.request.Request, timeout: int):
+    """Все запросы идут через этот контекст (без проверки SSL)."""
+    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)
 
 
 def app_dir() -> str:
@@ -37,56 +59,40 @@ def app_dir() -> str:
 def _safe_rel_path(rel: str) -> str:
     rel = (rel or "").replace("\\", "/").lstrip("/")
     p = PurePosixPath(rel)
-
-    if p.is_absolute():
-        raise ValueError(f"Bad path (absolute): {rel}")
-    if ".." in p.parts:
-        raise ValueError(f"Bad path (traversal): {rel}")
-    if len(p.parts) > 0 and ":" in p.parts[0]:
-        raise ValueError(f"Bad path (drive): {rel}")
-
+    if p.is_absolute() or ".." in p.parts or (len(p.parts) > 0 and ":" in p.parts[0]):
+        raise ValueError(f"Bad path: {rel}")
     return str(p)
 
 
 def sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
-        while True:
-            b = f.read(1024 * 1024)
-            if not b:
-                break
-            h.update(b)
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
     return h.hexdigest()
 
 
-def atomic_copy_replace(src: str, dst: str):
-    """
-    Пишем во временный файл и os.replace() поверх.
-    """
+def atomic_copy_replace(src: str, dst: str) -> None:
     dst_dir = os.path.dirname(dst)
     if dst_dir:
         os.makedirs(dst_dir, exist_ok=True)
-
     tmp = dst + ".tmp"
     try:
         if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
+            os.remove(tmp)
         shutil.copy2(src, tmp)
         os.replace(tmp, dst)
     finally:
-        try:
-            if os.path.exists(tmp):
+        if os.path.exists(tmp):
+            try:
                 os.remove(tmp)
-        except Exception:
-            pass
+            except:
+                pass
 
 
-def http_get_json(url: str, user_agent: str, timeout: int = 10) -> dict:
+def http_get_json(url: str, user_agent: str, timeout: int = 15) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", errors="replace"))
 
 
@@ -98,321 +104,13 @@ def find_asset_url(release: dict, asset_name: str) -> Optional[str]:
 
 
 def download_url_to_file(
-    url: str,
-    dst_path: str,
-    user_agent: str,
-    timeout: int = 60,
-    progress: Optional[ProgressCb] = None,
-    label: str = "",
-):
+        url: str, dst_path: str, user_agent: str, timeout: int = 120,
+        progress: Optional[ProgressCb] = None, label: str = ""
+) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with _urlopen(req, timeout=timeout) as response:
         total = int(response.headers.get("Content-Length", 0) or 0)
         downloaded = 0
-
-        if progress:
-            progress(label, 0)
-
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        with open(dst_path, "wb") as f:
-            while True:
-                chunk = response.read(1024 * 256)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-
-                if progress and total > 0:
-                    pct = int((downloaded / total) * 100)
-                    progress(label, max(0, min(100, pct)))
-
-        if progress:
-            progress(label, 100)
-
-
-def load_manifest(path: str) -> dict:
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        m = json.load(f)
-
-    if not isinstance(m, dict):
-        raise ValueError("manifest.json: root must be dict")
-    if "files" not in m or not isinstance(m["files"], list):
-        raise ValueError("manifest.json: missing 'files' list")
-
-    # delete list optional
-    if "delete" in m and not isinstance(m["delete"], list):
-        raise ValueError("manifest.json: 'delete' must be list")
-
-    return m
-
-
-def compute_changed_files(manifest: dict, base_dir: str) -> list[str]:
-    """
-    ВАЖНО:
-    - manifest["files"] может быть как "полный", так и "инкрементальный".
-    - Мы проверяем только то, что есть в manifest["files"].
-    """
-    changed: list[str] = []
-
-    for item in manifest.get("files", []) or []:
-        if not isinstance(item, dict):
-            continue
-
-        rel = item.get("path")
-        sha = (item.get("sha256") or "").lower().strip()
-        if not rel or not sha:
-            continue
-
-        rel = _safe_rel_path(rel)
-        local = os.path.join(base_dir, rel)
-
-        if not os.path.isfile(local):
-            changed.append(rel)
-            continue
-
-        try:
-            local_sha = sha256_file(local).lower()
-        except Exception:
-            changed.append(rel)
-            continue
-
-        if local_sha != sha:
-            changed.append(rel)
-
-    # dedupe preserving order
-    out: list[str] = []
-    seen = set()
-    for p in changed:
-        if p not in seen:
-            out.append(p)
-            seen.add(p)
-    return out
-
-
-def apply_deletes(manifest: dict, base_dir: str) -> list[str]:
-    deleted: list[str] = []
-    for rel in manifest.get("delete", []) or []:
-        if not isinstance(rel, str):
-            continue
-        rel = _safe_rel_path(rel)
-        target = os.path.join(base_dir, rel)
-        if os.path.isfile(target):
-            try:
-                os.remove(target)
-                deleted.append(rel)
-            except Exception:
-                pass
-    return deleted
-
-
-def extract_needed_from_zip(zip_path: str, needed_paths: list[str], out_dir: str):
-    os.makedirs(out_dir, exist_ok=True)
-    needed_paths = [_safe_rel_path(p) for p in needed_paths]
-
-    with zipfile.ZipFile(zip_path, "r") as z:
-        names = set(z.namelist())
-
-        for rel in needed_paths:
-            if rel not in names:
-                raise RuntimeError(f"update.zip missing file: {rel}")
-
-            out_path = os.path.join(out_dir, rel)
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-            with z.open(rel, "r") as src, open(out_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-
-
-def needs_deferred(rel: str, exe_name: str, allow_internal: bool) -> bool:
-    p = rel.replace("\\", "/").lower()
-    if p == exe_name.replace("\\", "/").lower():
-        return True
-    if allow_internal and p.startswith("_internal/"):
-        return True
-    return False
-
-
-def has_bin_changes(paths: list[str]) -> bool:
-    for p in paths:
-        if p.replace("\\", "/").lower().startswith("bin/"):
-            return True
-    return False
-
-
-def build_deferred_bat(
-    app_dir_path: str,
-    stage_dir: str,
-    deferred: list[str],
-    exe_name: str,
-    allow_internal: bool,
-) -> str:
-    """
-    Обновляет _internal и/или MVZ.exe после закрытия MVZ.exe.
-    """
-    tmp_dir = tempfile.gettempdir()
-    bat_path = os.path.join(tmp_dir, "MVZ_update_files.bat")
-
-    exe_basename = os.path.basename(exe_name)
-
-    has_internal = allow_internal and any(p.replace("\\", "/").lower().startswith("_internal/") for p in deferred)
-    has_exe = any(p.replace("\\", "/").lower() == exe_name.replace("\\", "/").lower() for p in deferred)
-
-    lines: list[str] = []
-    lines.append("@echo off")
-    lines.append("chcp 65001 >nul")
-    lines.append("setlocal")
-    lines.append(f"set APPDIR={app_dir_path}")
-    lines.append(f"set STAGE={stage_dir}")
-    lines.append("")
-    lines.append(":wait_loop")
-    lines.append(f'tasklist /FI "IMAGENAME eq {exe_basename}" 2>NUL | find /I "{exe_basename}" >NUL')
-    lines.append("if not errorlevel 1 (")
-    lines.append("  timeout /t 1 /nobreak >nul")
-    lines.append("  goto wait_loop")
-    lines.append(")")
-    lines.append("")
-
-    if has_internal:
-        lines.append('if exist "%STAGE%\\_internal" (')
-        lines.append('  robocopy "%STAGE%\\_internal" "%APPDIR%\\_internal" /E /NFL /NDL /NJH /NJS /NP >nul')
-        lines.append(")")
-
-    if has_exe:
-        lines.append(f'if exist "%STAGE%\\{exe_basename}" (')
-        lines.append(f'  copy /y "%STAGE%\\{exe_basename}" "%APPDIR%\\{exe_basename}" >nul')
-        lines.append(")")
-
-    for rel in deferred:
-        rel_norm = rel.replace("\\", "/")
-        low = rel_norm.lower()
-        if low == exe_name.replace("\\", "/").lower():
-            continue
-        if allow_internal and low.startswith("_internal/"):
-            continue
-
-        win_rel = rel_norm.replace("/", "\\")
-        dst_dir = os.path.dirname(win_rel)
-        if dst_dir:
-            lines.append(f'mkdir "%APPDIR%\\{dst_dir}" >nul 2>nul')
-        lines.append(f'copy /y "%STAGE%\\{win_rel}" "%APPDIR%\\{win_rel}" >nul')
-
-    lines.append("")
-    lines.append(f'start "" "%APPDIR%\\{exe_basename}"')
-    lines.append('rmdir /s /q "%STAGE%" >nul 2>nul')
-    lines.append('del "%~f0" >nul 2>nul')
-Нужно менять код — и ты уже почти всё написал: остаётся привести к **дельта-обновлениям** (manifest+zip только с изменёнными файлами) и добавить обработку удалений. [file:364][web:171][web:177]
-
-## mvz_updater.py (готовый)
-```py
-from __future__ import annotations
-
-import os
-import sys
-import json
-import time
-import hashlib
-import shutil
-import tempfile
-import zipfile
-import subprocess
-from pathlib import PurePosixPath
-from dataclasses import dataclass
-from typing import Optional, Callable, Any
-
-
-import urllib.request
-import urllib.error
-
-ProgressCb = Callable[[str, int], None]  # (label, percent)
-
-
-@dataclass
-class UpdateResult:
-    updated_any: bool
-    restarted: bool
-    changed_files: list[str]
-    new_version: str
-
-
-def app_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
-def _safe_rel_path(rel: str) -> str:
-    rel = (rel or "").replace("\\", "/").lstrip("/")
-    p = PurePosixPath(rel)
-
-    if p.is_absolute():
-        raise ValueError(f"Bad path (absolute): {rel}")
-    if ".." in p.parts:
-        raise ValueError(f"Bad path (traversal): {rel}")
-    if len(p.parts) > 0 and ":" in p.parts:
-        raise ValueError(f"Bad path (drive): {rel}")
-
-    return str(p)
-
-
-def sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(1024 * 1024)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
-
-
-def atomic_copy_replace(src: str, dst: str):
-    dst_dir = os.path.dirname(dst)
-    if dst_dir:
-        os.makedirs(dst_dir, exist_ok=True)
-
-    tmp = dst + ".tmp"
-    try:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-        shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-
-def http_get_json(url: str, user_agent: str, timeout: int = 10) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", errors="replace"))
-
-
-def find_asset_url(release: dict, asset_name: str) -> Optional[str]:
-    for a in release.get("assets", []) or []:
-        if a.get("name") == asset_name:
-            return a.get("browser_download_url")
-    return None
-
-
-def download_url_to_file(
-    url: str,
-    dst_path: str,
-    user_agent: str,
-    timeout: int = 60,
-    progress: Optional[ProgressCb] = None,
-    label: str = "",
-):
-    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        total = int(response.headers.get("Content-Length", 0) or 0)
-        downloaded = 0
-
         if progress:
             progress(label, 0)
 
@@ -427,11 +125,9 @@ def download_url_to_file(
                     break
                 f.write(chunk)
                 downloaded += len(chunk)
-
                 if progress and total > 0:
                     pct = int((downloaded / total) * 100)
                     progress(label, max(0, min(100, pct)))
-
         if progress:
             progress(label, 100)
 
@@ -439,105 +135,86 @@ def download_url_to_file(
 def load_manifest(path: str) -> dict:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         m = json.load(f)
-
     if not isinstance(m, dict):
         raise ValueError("manifest.json: root must be dict")
     if "files" not in m or not isinstance(m["files"], list):
         raise ValueError("manifest.json: missing 'files' list")
-    if "delete" in m and not isinstance(m["delete"], list):
+    if "delete" in m and not isinstance(m.get("delete", []), list):
         raise ValueError("manifest.json: 'delete' must be list")
-
     return m
 
 
-def compute_changed_files(manifest: dict, base_dir: str) -> list[str]:
-    changed: list[str] = []
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    out, seen = [], set()
+    for x in items:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
 
+
+def compute_changed_files(manifest: dict, base_dir: str) -> list[str]:
+    changed = []
     for item in manifest.get("files", []) or []:
         if not isinstance(item, dict):
             continue
-
         rel = item.get("path")
         sha = (item.get("sha256") or "").lower().strip()
         if not rel or not sha:
             continue
-
         rel = _safe_rel_path(rel)
         local = os.path.join(base_dir, rel)
-
         if not os.path.isfile(local):
             changed.append(rel)
             continue
-
         try:
-            local_sha = sha256_file(local).lower()
-        except Exception:
+            if sha256_file(local).lower() != sha:
+                changed.append(rel)
+        except:
             changed.append(rel)
-            continue
-
-        if local_sha != sha:
-            changed.append(rel)
-
-    return changed
+    return _dedupe_keep_order(changed)
 
 
 def compute_delete_files(manifest: dict, base_dir: str) -> list[str]:
-    deleted: list[str] = []
+    deleted = []
     for rel in manifest.get("delete", []) or []:
         if not isinstance(rel, str):
             continue
         rel = _safe_rel_path(rel)
-        local = os.path.join(base_dir, rel)
-        if os.path.exists(local):
+        target = os.path.join(base_dir, rel)
+        if os.path.exists(target):
             deleted.append(rel)
-    return deleted
+    return _dedupe_keep_order(deleted)
 
 
-def extract_needed_from_zip(zip_path: str, needed_paths: list[str], out_dir: str):
+def extract_needed_from_zip(zip_path: str, needed_paths: list[str], out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
     needed_paths = [_safe_rel_path(p) for p in needed_paths]
-
     with zipfile.ZipFile(zip_path, "r") as z:
         names = set(z.namelist())
-
         for rel in needed_paths:
-            if rel not in names:
+            real_name = rel if rel in names else ("./" + rel)
+            if real_name not in names and rel not in names:
                 raise RuntimeError(f"update.zip missing file: {rel}")
-
+            use_name = real_name if real_name in names else rel
             out_path = os.path.join(out_dir, rel)
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-            with z.open(rel, "r") as src, open(out_path, "wb") as dst:
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with z.open(use_name, "r") as src, open(out_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
 
 
 def needs_deferred(rel: str, exe_name: str, allow_internal: bool) -> bool:
     p = rel.replace("\\", "/").lower()
-    if p == exe_name.replace("\\", "/").lower():
-        return True
-    if allow_internal and p.startswith("_internal/"):
-        return True
-    return False
-
-
-def has_bin_changes(paths: list[str]) -> bool:
-    for p in paths:
-        if p.replace("\\", "/").lower().startswith("bin/"):
-            return True
-    return False
+    exe = exe_name.replace("\\", "/").lower()
+    return p == exe or (allow_internal and p.startswith("_internal/"))
 
 
 def build_deferred_bat(
-    app_dir_path: str,
-    stage_dir: str,
-    deferred_files: list[str],
-    deferred_deletes: list[str],
-    exe_name: str,
-    allow_internal: bool,
+        app_dir_path: str, stage_dir: str, deferred_files: list[str],
+        deferred_deletes: list[str], exe_name: str, allow_internal: bool
 ) -> str:
     tmp_dir = tempfile.gettempdir()
     bat_path = os.path.join(tmp_dir, "MVZ_update_files.bat")
-
     exe_basename = os.path.basename(exe_name)
 
     def norm(p: str) -> str:
@@ -546,99 +223,71 @@ def build_deferred_bat(
     has_internal = allow_internal and any(norm(p).startswith("_internal/") for p in deferred_files)
     has_exe = any(norm(p) == norm(exe_name) for p in deferred_files)
 
-    lines: list[str] = []
-    lines.append("@echo off")
-    lines.append("chcp 65001 >nul")
-    lines.append("setlocal")
-    lines.append(f"set APPDIR={app_dir_path}")
-    lines.append(f"set STAGE={stage_dir}")
-    lines.append("")
-    lines.append(":wait_loop")
-    lines.append(f'tasklist /FI "IMAGENAME eq {exe_basename}" 2>NUL | find /I "{exe_basename}" >NUL')
-    lines.append("if not errorlevel 1 (")
-    lines.append("  timeout /t 1 /nobreak >nul")
-    lines.append("  goto wait_loop")
-    lines.append(")")
-    lines.append("")
+    lines = [
+        "@echo off", "chcp 65001 >nul", "setlocal",
+        f"set APPDIR={app_dir_path}", f"set STAGE={stage_dir}", "",
+        ":wait_loop",
+        f'tasklist /FI "IMAGENAME eq {exe_basename}" 2>NUL | find /I "{exe_basename}" >NUL',
+        "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait_loop )", ""
+    ]
 
-    # apply deletes first
     for rel in deferred_deletes:
-        rel_norm = rel.replace("\\", "/")
-        win_rel = rel_norm.replace("/", "\\")
-        lines.append(f'del /f /q "%APPDIR%\\{win_rel}" >nul 2>nul')
+        lines.append(f'del /f /q "%APPDIR%\\{rel.replace("/", chr(92))}" >nul 2>nul')
 
-    # copy _internal (if present as folder in stage)
     if has_internal:
-        lines.append('if exist "%STAGE%\\_internal" (')
-        lines.append('  robocopy "%STAGE%\\_internal" "%APPDIR%\\_internal" /E /NFL /NDL /NJH /NJS /NP >nul')
-        lines.append(")")
+        lines.append(
+            'if exist "%STAGE%\\_internal" robocopy "%STAGE%\\_internal" "%APPDIR%\\_internal" /E /NFL /NDL /NJH /NJS /NP >nul')
 
-    # copy exe
     if has_exe:
-        lines.append(f'if exist "%STAGE%\\{exe_basename}" (')
-        lines.append(f'  copy /y "%STAGE%\\{exe_basename}" "%APPDIR%\\{exe_basename}" >nul')
-        lines.append(")")
+        lines.append(
+            f'if exist "%STAGE%\\{exe_basename}" copy /y "%STAGE%\\{exe_basename}" "%APPDIR%\\{exe_basename}" >nul')
 
-    # copy remaining deferred files
     for rel in deferred_files:
-        rel_norm = rel.replace("\\", "/")
-        low = rel_norm.lower()
-
-        if low == norm(exe_name):
+        if norm(rel) == norm(exe_name) or (allow_internal and norm(rel).startswith("_internal/")):
             continue
-        if allow_internal and low.startswith("_internal/"):
-            continue
+        wrel = rel.replace("/", "\\")
+        d = os.path.dirname(wrel)
+        if d:
+            lines.append(f'mkdir "%APPDIR%\\{d}" >nul 2>nul')
+        lines.append(f'copy /y "%STAGE%\\{wrel}" "%APPDIR%\\{wrel}" >nul')
 
-        win_rel = rel_norm.replace("/", "\\")
-        dst_dir = os.path.dirname(win_rel)
-        if dst_dir:
-            lines.append(f'mkdir "%APPDIR%\\{dst_dir}" >nul 2>nul')
-        lines.append(f'copy /y "%STAGE%\\{win_rel}" "%APPDIR%\\{win_rel}" >nul')
-
-    lines.append("")
-    lines.append(f'start "" "%APPDIR%\\{exe_basename}"')
-    lines.append('rmdir /s /q "%STAGE%" >nul 2>nul')
-    lines.append('del "%~f0" >nul 2>nul')
-    lines.append("endlocal")
+    lines.extend([
+        f'start "" "%APPDIR%\\{exe_basename}"',
+        'rmdir /s /q "%STAGE%" >nul 2>nul',
+        'del "%~f0" >nul 2>nul',
+        "endlocal"
+    ])
 
     with open(bat_path, "w", encoding="utf-8", errors="ignore") as f:
         f.write("\r\n".join(lines))
-
     return bat_path
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    s = (v or "").strip().lstrip("v").split("-")[0].split("+")[0]
+    return tuple(int(p) if p.isdigit() else 0 for p in (s.split(".") + ["0"] * 3)[:3])
+
+
 def apply_update_from_release(
-    owner: str,
-    repo: str,
-    current_version: str,
-    manifest_name: str = "manifest.json",
-    user_agent: str = "MVZ-Updater",
-    allow_internal: bool = False,
-    progress: Optional[ProgressCb] = None,
-    stop_bin_cb: Optional[Callable[[], None]] = None,
-    settings: Optional[Any] = None,
+        owner: str, repo: str, current_version: str,
+        manifest_name: str = "manifest.json", user_agent: str = "MVZ-Updater",
+        allow_internal: bool = False, progress: Optional[ProgressCb] = None,
+        stop_bin_cb: Optional[Callable[[], None]] = None, settings: Optional[Any] = None
 ) -> UpdateResult:
     base_dir = app_dir()
+    _log(f"[Update] check start (app={current_version})")
 
-    latest = http_get_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", user_agent=user_agent)
+    try:
+        latest = http_get_json(
+            f"https://api.github.com/repos/{owner}/{repo}/releases/latest",
+            user_agent, timeout=15
+        )
+    except Exception as e:
+        _log(f"[Update] Exception: {repr(e)}")
+        raise
+
     tag = (latest.get("tag_name") or "").strip()
-    if not tag:
-        return UpdateResult(False, False, [], "")
-
-    def version_tuple(v: str) -> tuple[int, int, int]:
-        v = (v or "").strip().split().lstrip("v")
-        parts = v.split(".")
-        out: list[int] = []
-        for p in parts:
-            try:
-                out.append(int(p))
-            except Exception:
-                out.append(0)
-        while len(out) < 3:
-            out.append(0)
-        return tuple(out[:3])  # type: ignore
-
-    if version_tuple(tag) <= version_tuple(current_version):
+    if not tag or _version_tuple(tag) <= _version_tuple(current_version):
         return UpdateResult(False, False, [], tag)
 
     manifest_url = find_asset_url(latest, manifest_name)
@@ -646,124 +295,81 @@ def apply_update_from_release(
         return UpdateResult(False, False, [], tag)
 
     exe_name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) else "MVZ.exe"
-
     tmp_dir = tempfile.gettempdir()
     manifest_path = os.path.join(tmp_dir, "mvz_manifest.json")
     stage_dir = os.path.join(tmp_dir, "mvz_update_stage")
     zip_path = os.path.join(tmp_dir, "mvz_update.zip")
 
-    try:
-        if os.path.isdir(stage_dir):
-            shutil.rmtree(stage_dir, ignore_errors=True)
-    except Exception:
-        pass
+    if os.path.isdir(stage_dir):
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
-    download_url_to_file(manifest_url, manifest_path, user_agent=user_agent, progress=progress, label="manifest.json")
+    download_url_to_file(manifest_url, manifest_path, user_agent, timeout=60, progress=progress, label=manifest_name)
     manifest = load_manifest(manifest_path)
 
-    # zip name is taken from manifest (so you can change it without changing app)
     package_name = (manifest.get("package") or "update.zip").strip() or "update.zip"
     package_url = find_asset_url(latest, package_name)
     if not package_url:
         return UpdateResult(False, False, [], tag)
 
-    changed_files = compute_changed_files(manifest, base_dir)
-    delete_files = compute_delete_files(manifest, base_dir)
+    changed = compute_changed_files(manifest, base_dir)
+    deletes = compute_delete_files(manifest, base_dir)
+    touched = _dedupe_keep_order(changed + deletes)
 
-    # unify list (keep order-ish)
-    all_touched: list[str] = []
-    seen = set()
-    for p in changed_files + delete_files:
-        if p not in seen:
-            seen.add(p)
-            all_touched.append(p)
-
-    if not all_touched:
-        if settings is not None:
+    if not touched:
+        if settings:
             try:
                 settings.setValue("last_release_tag", tag)
-            except Exception:
+            except:
                 pass
         return UpdateResult(False, False, [], tag)
 
-    if has_bin_changes(all_touched) and stop_bin_cb is not None:
-        stop_bin_cb()
-        time.sleep(1)
-
-    # apply deletes that are safe immediately, defer exe/_internal deletes
-    immediate_deletes: list[str] = []
-    deferred_deletes: list[str] = []
-    for rel in delete_files:
-        if needs_deferred(rel, exe_name=exe_name, allow_internal=allow_internal):
-            deferred_deletes.append(rel)
-        else:
-            immediate_deletes.append(rel)
-
-    for rel in immediate_deletes:
+    if stop_bin_cb:
         try:
-            os.remove(os.path.join(base_dir, rel))
-        except Exception:
+            stop_bin_cb()
+        except:
             pass
 
-    # now handle changed files from zip
-    download_url_to_file(package_url, zip_path, user_agent=user_agent, progress=progress, label=package_name)
-    extract_needed_from_zip(zip_path, changed_files, stage_dir)
+    imm_del, def_del = [], []
+    for r in deletes:
+        (def_del if needs_deferred(r, exe_name, allow_internal) else imm_del).append(r)
 
-    immediate: list[str] = []
-    deferred: list[str] = []
+    for r in imm_del:
+        try:
+            t = os.path.join(base_dir, r)
+            (shutil.rmtree(t, ignore_errors=True) if os.path.isdir(t) else os.remove(t))
+        except:
+            pass
 
-    for rel in changed_files:
-        if needs_deferred(rel, exe_name=exe_name, allow_internal=allow_internal):
-            deferred.append(rel)
-        else:
-            immediate.append(rel)
+    download_url_to_file(package_url, zip_path, user_agent, timeout=300, progress=progress, label=package_name)
+    extract_needed_from_zip(zip_path, changed, stage_dir)
 
-    total = max(1, len(immediate))
-    for i, rel in enumerate(immediate, start=1):
+    imm_files, def_files = [], []
+    for r in changed:
+        (def_files if needs_deferred(r, exe_name, allow_internal) else imm_files).append(r)
+
+    total = max(1, len(imm_files))
+    for i, r in enumerate(imm_files, 1):
         if progress:
-            progress(f"apply: {rel}", int((i / total) * 100))
+            progress(f"apply: {r}", int((i / total) * 100))
+        atomic_copy_replace(os.path.join(stage_dir, r), os.path.join(base_dir, r))
 
-        src = os.path.join(stage_dir, rel)
-        dst = os.path.join(base_dir, rel)
-        if not os.path.isfile(src):
-            raise RuntimeError(f"Stage missing: {rel}")
-        atomic_copy_replace(src, dst)
-
-    # deferred: restart required
-    if deferred or deferred_deletes:
+    if def_files or def_del:
         if not getattr(sys, "frozen", False):
             raise RuntimeError("Deferred update requires frozen build")
-
-        bat = build_deferred_bat(
-            app_dir_path=base_dir,
-            stage_dir=stage_dir,
-            deferred_files=deferred,
-            deferred_deletes=deferred_deletes,
-            exe_name=exe_name,
-            allow_internal=allow_internal,
-        )
-
+        bat = build_deferred_bat(base_dir, stage_dir, def_files, def_del, exe_name, allow_internal)
         subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)
-
-        if settings is not None:
+        if settings:
             try:
                 settings.setValue("last_release_tag", tag)
-            except Exception:
+            except:
                 pass
+        return UpdateResult(True, True, touched, tag)
 
-        return UpdateResult(True, True, all_touched, tag)
-
-    if settings is not None:
+    if os.path.isdir(stage_dir):
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    if settings:
         try:
             settings.setValue("last_release_tag", tag)
-        except Exception:
+        except:
             pass
-
-    # cleanup stage (no restart)
-    try:
-        if os.path.isdir(stage_dir):
-            shutil.rmtree(stage_dir, ignore_errors=True)
-    except Exception:
-        pass
-
-    return UpdateResult(True, False, all_touched, tag)
+    return UpdateResult(True, False, touched, tag)

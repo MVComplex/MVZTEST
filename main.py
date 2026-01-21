@@ -1,3 +1,8 @@
+# === MONKEY-PATCH SSL: ОТКЛЮЧАЕМ ПРОВЕРКУ СЕРТИФИКАТОВ ГЛОБАЛЬНО ===
+import ssl
+
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import os
 import sys
 import ctypes
@@ -8,21 +13,18 @@ import traceback
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QFont
-from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtNetwork import QLocalSocket, QLocalServer
 
-# Глушим шумный лог Qt по шрифтам
-os.environ.setdefault("QT_LOGGING_RULES", "qt.text.font.db=false")
+from ui.main_window import MainWindow
 
-BOOT_LOG = os.path.join(tempfile.gettempdir(), "MVZ_boot.log")
-_SINGLE_SERVER: QLocalServer | None = None
-_USER = os.getlogin() if hasattr(os, "getlogin") else "user"
-_SERVER_NAME = f"MVZ_{_USER}"
+APP_NAME = "MVZ"
+LOG_PATH = os.path.join(tempfile.gettempdir(), "mvz_boot.log")
 
 
-def log_boot(msg: str):
+def log_boot(msg: str) -> None:
     try:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(BOOT_LOG, "a", encoding="utf-8") as f:
+        with open(LOG_PATH, "a", encoding="utf-8", errors="ignore") as f:
             f.write(f"[{ts}] {msg}\n")
     except Exception:
         pass
@@ -35,143 +37,104 @@ def is_admin() -> bool:
         return False
 
 
-def relaunch_elevated() -> bool:
-    """
-    Перезапуск процесса с правами админа через ShellExecuteW 'runas'. [web:112][web:116]
-    """
+def request_admin_and_restart() -> None:
     try:
-        exe = sys.executable
-        params = " ".join([f'"{a}"' for a in sys.argv])
-        rc = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", exe, params, None, 1
+        script = sys.argv[0]
+        params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, f'"{script}" {params}', None, 1
         )
-        return int(rc) > 32
-    except Exception:
-        return False
 
-
-def install_exception_hook():
-    """
-    Пишем крэши в BOOT_LOG и показываем диалог.
-    """
-    def handle_ex(exctype, value, tb):
-        text = "".join(traceback.format_exception(exctype, value, tb))
-        log_boot("UNHANDLED EXCEPTION:\n" + text)
-        try:
+        if ret > 32:
+            sys.exit(0)
+        else:
             QMessageBox.critical(
                 None,
-                "MVZ — ошибка",
-                "Произошла неперехваченная ошибка.\n"
-                "Подробности записаны в лог запуска:\n" + BOOT_LOG,
+                "Ошибка",
+                "Не удалось получить права администратора.\n"
+                "MVZ требует запуск от имени администратора для работы обхода."
             )
-        except Exception:
-            pass
-        sys.__excepthook__(exctype, value, tb)
-
-    sys.excepthook = handle_ex
-
-
-def resource_path(relative: str) -> str:
-    """
-    Корректный путь к ресурсам как в dev, так и в собранном .exe.
-    """
-    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative)
+            sys.exit(1)
+    except Exception as e:
+        log_boot(f"request_admin failed: {e}")
+        sys.exit(1)
 
 
-def _activate_running_instance() -> bool:
-    """
-    Пытаемся подключиться к уже запущенному экземпляру.
-    Если удаётся — шлём ping и выходим.
-    """
-    sock = QLocalSocket()
-    sock.connectToServer(_SERVER_NAME)
-    connected = sock.waitForConnected(300)
-    if not connected:
-        sock.abort()
-        return False
-    try:
-        sock.write(b"activate")
-        sock.flush()
-        sock.waitForBytesWritten(200)
-    except Exception:
-        pass
-    sock.disconnectFromServer()
-    return True
+def _install_activation_server(window: MainWindow) -> None:
+    """Single instance via QLocalServer."""
+    server_name = f"{APP_NAME}_SingleInstance"
 
+    socket = QLocalSocket()
+    socket.connectToServer(server_name)
 
-def _install_activation_server(window):
-    """
-    Локальный сервер: новые экземпляры активируют уже открытое окно. [web:101][web:106]
-    """
-    global _SINGLE_SERVER
+    if socket.waitForConnected(500):
+        log_boot("Another instance detected, activating...")
+        socket.write(b"ACTIVATE")
+        socket.flush()
+        socket.disconnectFromServer()
+        sys.exit(0)
+
     server = QLocalServer()
-    try:
-        QLocalServer.removeServer(_SERVER_NAME)
-    except Exception:
-        pass
+    QLocalServer.removeServer(server_name)
 
-    if not server.listen(_SERVER_NAME):
-        try:
-            QLocalServer.removeServer(_SERVER_NAME)
-            server.listen(_SERVER_NAME)
-        except Exception:
-            pass
-
-    _SINGLE_SERVER = server
+    if not server.listen(server_name):
+        log_boot(f"Failed to start single-instance server: {server.errorString()}")
+        return
 
     def on_new_connection():
-        sock = server.nextPendingConnection()
-        if not sock:
-            return
-        try:
-            sock.waitForReadyRead(200)
-            _ = bytes(sock.readAll())
-        except Exception:
-            pass
-        sock.disconnectFromServer()
-        try:
-            window.showNormal()
-            window.activateWindow()
-            window.raise_()
-        except Exception:
-            window.show()
+        client = server.nextPendingConnection()
+        if client:
+            client.waitForReadyRead(1000)
+            data = client.readAll().data()
+            if data == b"ACTIVATE":
+                window.showNormal()
+                window.activateWindow()
+                window.raise_()
+            client.disconnectFromServer()
 
     server.newConnection.connect(on_new_connection)
+    window._single_instance_server = server
 
 
 def main():
     log_boot("=== MVZ start ===")
-    install_exception_hook()
 
-    # ---- Авто-поднятие прав без Qt-диалога ----
+    # Запрос прав администратора
     if not is_admin():
-        log_boot("Not admin, trying to relaunch elevated via ShellExecuteW(runas)")
-        if relaunch_elevated():
-            # Успешно запустили новый процесс с UAC — текущий выходим
-            sys.exit(0)
-        else:
-            log_boot("Elevation failed, continue without admin")
+        log_boot("Not admin, requesting elevation...")
+        request_admin_and_restart()
 
-    # Single instance
-    if _activate_running_instance():
-        log_boot("Other instance detected, activating and exiting.")
-        return
+    log_boot("Running as admin")
+
+    # Настройка приложения
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("MVZapret (MVZ)")
-    app.setOrganizationName("MVZ")
-    app.setDesktopFileName("MVZapret")
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName("MVComplex")
+    app.setQuitOnLastWindowClosed(False)
 
-    font = QFont("Segoe UI", 9)
-    app.setFont(font)
-
-    icon_path = resource_path(os.path.join("ui", "mvz-round.ico"))
-    if os.path.isfile(icon_path):
+    # Установка иконки
+    icon_path = os.path.join(
+        os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__),
+        "mvz-round.ico"
+    )
+    if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    from ui.main_window import MainWindow
+    # Установка шрифта
+    try:
+        font = QFont("Segoe UI", 9)
+        app.setFont(font)
+    except Exception:
+        pass
 
+    # Создание главного окна
     window = MainWindow()
     window.show()
 
@@ -184,4 +147,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log_boot(f"UNHANDLED EXCEPTION: {traceback.format_exc()}")
+        QMessageBox.critical(None, "Критическая ошибка", f"MVZ crashed:\n{e}")
+        sys.exit(1)
