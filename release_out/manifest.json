@@ -1,14 +1,14 @@
 {
-  "version": "v1.4",
-  "created_utc": "2026-01-21T16:01:13Z",
+  "version": "v1.5",
+  "created_utc": "2026-02-05T15:18:24Z",
   "package": "update.zip",
   "include_internal": false,
   "delta": false,
   "files": [
     {
       "path": "MVZ.exe",
-      "sha256": "19586f66ef743aa3887ec7bfeca1fa4ec00353d9867525cb4aca927604af0b80",
-      "size": 2769276
+      "sha256": "42c317b6660da409fb72a522ffb8cc996596ec5865a7487be636c74192371ab9",
+      "size": 2777624
     },
     {
       "path": "bin/WinDivert.dll",
@@ -51,74 +51,164 @@
       "size": 204288
     },
     {
-      "path": "discord_rpc.py",
-      "sha256": "31edd11a33fccce67eb7a92aa22e36ef50d6ecb7ed07bd59465259877b747c0f",
-      "size": 4313
+      "path": "general (ALT).bat",
+      "sha256": "b9e0f854b3b0a37794edc6504edc31c8ec4c4ead4fa60fc337b71058d2925951",
+      "size": 5251
+    },
+    {
+      "path": "general (ALT1).bat",
+      "sha256": "f07361dd83947ffd12bd4a1615e3d883ca4b8d27ff4419bfe5602d5f322f191f",
+      "size": 5065
+    },
+    {
+      "path": "general (ALT10).bat",
+      "sha256": "1c238b83b79be92b7d4c8e4269a88a10c67d91c63ca4080c5f3c1ae0e6d34343",
+      "size": 4669
     },
     {
       "path": "general (ALT11).bat",
-      "sha256": "75485b4aa44ec856762964d84b4a6993e005cb9d962cb5b2eb417cb7a130f367",
-      "size": 3270
+      "sha256": "6e3f9309dac2500b26f079d2917d6e02f37b166f156286d28d877c83fd95537e",
+      "size": 6944
+    },
+    {
+      "path": "general (ALT2).bat",
+      "sha256": "1144c1b47b0f63b8399958bebddc1e433d30027aed37226363fb339dacf3540e",
+      "size": 4642
+    },
+    {
+      "path": "general (ALT3).bat",
+      "sha256": "835c287e7daacc966a96f3ec570be728b1edb659b7b1e9be8b93444c906a1f55",
+      "size": 4736
+    },
+    {
+      "path": "general (ALT4).bat",
+      "sha256": "1319f0f1cce4da1fd54a9060181460232bd8eef5c5b6e7b2d508980549a3f00e",
+      "size": 6466
+    },
+    {
+      "path": "general (ALT5).bat",
+      "sha256": "8dd2cfbe2457865c27cfca238c87181b5b786c633bb37b31c9718852bc3d91b2",
+      "size": 3190
+    },
+    {
+      "path": "general (ALT6).bat",
+      "sha256": "a607728856a222f9bc036169bc0ade331f22f422271ff8e94b7f037f5cc4e2a3",
+      "size": 4674
+    },
+    {
+      "path": "general (ALT7).bat",
+      "sha256": "4ef6a0ec43d131983c5153acc29593fe3d65749deeccbbfaac588a1d400f6f4e",
+      "size": 4594
+    },
+    {
+      "path": "general (ALT8).bat",
+      "sha256": "bcba17a157d14df8af73471232bdebef9d26630c649e6c9a73ac42c8a6dd7111",
+      "size": 4513
+    },
+    {
+      "path": "general (ALT9).bat",
+      "sha256": "97a2a032d6060f9e96bd261c8df97045bac1d48ada053b81f7f771423f88cdaa",
+      "size": 4442
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT).bat",
+      "sha256": "c42547ed748a0fe25c6e7a2b665cbe92b0f78e9a97bec4ced378f0788b1b5221",
+      "size": 5440
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT2).bat",
+      "sha256": "36d2f3622d5dc154cc023706433940824303e83137ad5d7ddc907e2868f0a975",
+      "size": 5718
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT3).bat",
+      "sha256": "55b46314e8793ffff867cbcabf4a9ff75d69153cfc4a38bf073ef5eb2ccd3bfc",
+      "size": 6046
+    },
+    {
+      "path": "general (FAKE TLS AUTO).bat",
+      "sha256": "c715b54973b1f7bea0ddfdab31b8f1ff54109a9e8f999381be65de01f39bc9cb",
+      "size": 5178
+    },
+    {
+      "path": "general (SIMPLE FAKE ALT).bat",
+      "sha256": "0bae9c17460c5cf8886bdda3039fcb13f41f34ece49eb3ddd0e031116f9fe351",
+      "size": 4710
+    },
+    {
+      "path": "general (SIMPLE FAKE ALT2).bat",
+      "sha256": "5db3ec1f70415daa688b050ab6e376ad52df2fd4f59fd700279197c830f557dc",
+      "size": 3571
+    },
+    {
+      "path": "general (SIMPLE FAKE).bat",
+      "sha256": "021118e10959fea841856102e7d01870a16d24e6cb7a7f21cf843617c9b905ec",
+      "size": 5394
+    },
+    {
+      "path": "general.bat",
+      "sha256": "34063de07a4a354edc698ecbeb99dac023b931eaf37d28bde09e3cbf7ac62be3",
+      "size": 5466
     },
     {
       "path": "ipset-all.txt",
-      "sha256": "19123a22bf1108815c07bda3cda8df282b30bd63e4939949928969c0fd195873",
-      "size": 18
+      "sha256": "050887f9de1329575e7c6dcb22d634d44e36d7e9e4ebb2ed25242ac45c884d8d",
+      "size": 17
     },
     {
       "path": "ipset-all.txt.backup",
-      "sha256": "826a5737dfc59676d6ba395d3515b755284570c01d6654d73a216aca8a21e7d4",
-      "size": 210384
+      "sha256": "69cc3c991fc80f558f8d921a08200c9e11290c7194b295b25eb0592ade15f8e7",
+      "size": 198321
     },
     {
       "path": "ipset-exclude.txt",
-      "sha256": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
-      "size": 135
+      "sha256": "36159ca57996843462cccef23b576cb461dfaa8738e2ab01807db5a6c1746725",
+      "size": 125
     },
     {
       "path": "list-exclude.txt",
-      "sha256": "229499a77dfbe42e7e3e7de0123fcc4a57374aaf3e17fc03345ba2d833fe454d",
-      "size": 302
+      "sha256": "890ab68fb7cf516ace8d72a2ad44bd0d082a2e4381237a4e6d63a5c55dc447d6",
+      "size": 277
     },
     {
       "path": "list-general.txt",
-      "sha256": "c621c481e5645eb3d60e5bafc466cde117f4df3b897313b08de07d9f1badd9cf",
-      "size": 4236
+      "sha256": "caf93651f06bb8f0aaf96056bdae2653944e7bc69efba31a7c55db4dcdc40858",
+      "size": 825
     },
     {
       "path": "list-google.txt",
-      "sha256": "36ec86bbe19b9e5815d807d6b25dffd01bdf69e9cf6c05d7cf60cd7c9bf036d8",
-      "size": 362
+      "sha256": "4bdbb90546f7bd56baedcddfc1dab25bed9c73893e8eddb62c272a21c3e98eed",
+      "size": 345
     },
     {
       "path": "lists/ipset-all.txt",
-      "sha256": "19123a22bf1108815c07bda3cda8df282b30bd63e4939949928969c0fd195873",
-      "size": 18
+      "sha256": "49dd5dfb2c8c047663650c9753c8b51bdb12dd3cf17c02f4367cb2b26e8e55bf",
+      "size": 311
     },
     {
       "path": "lists/ipset-all.txt.backup",
-      "sha256": "826a5737dfc59676d6ba395d3515b755284570c01d6654d73a216aca8a21e7d4",
-      "size": 210384
+      "sha256": "69cc3c991fc80f558f8d921a08200c9e11290c7194b295b25eb0592ade15f8e7",
+      "size": 198321
     },
     {
       "path": "lists/ipset-exclude.txt",
-      "sha256": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
-      "size": 135
+      "sha256": "36159ca57996843462cccef23b576cb461dfaa8738e2ab01807db5a6c1746725",
+      "size": 125
     },
     {
       "path": "lists/list-exclude.txt",
-      "sha256": "229499a77dfbe42e7e3e7de0123fcc4a57374aaf3e17fc03345ba2d833fe454d",
-      "size": 302
+      "sha256": "890ab68fb7cf516ace8d72a2ad44bd0d082a2e4381237a4e6d63a5c55dc447d6",
+      "size": 277
     },
     {
       "path": "lists/list-general.txt",
-      "sha256": "c621c481e5645eb3d60e5bafc466cde117f4df3b897313b08de07d9f1badd9cf",
-      "size": 4236
+      "sha256": "9ed12db179ed47a5898bea6b05192801fea84e77eb0e853c1db06630fc353375",
+      "size": 1201
     },
     {
       "path": "lists/list-google.txt",
-      "sha256": "36ec86bbe19b9e5815d807d6b25dffd01bdf69e9cf6c05d7cf60cd7c9bf036d8",
-      "size": 362
+      "sha256": "4bdbb90546f7bd56baedcddfc1dab25bed9c73893e8eddb62c272a21c3e98eed",
+      "size": 345
     },
     {
       "path": "mvz-round.ico",
@@ -152,8 +242,8 @@
     },
     {
       "path": "ui/main_window.py",
-      "sha256": "ea0af5e714440ad2b6aff666a7e84fea9a3ac2bea239c9f225a59aa2e38165d9",
-      "size": 66584
+      "sha256": "6e003b68eb767ee88cf387fea516eca34635e4a63c20ec62aa90fff96cab4fd8",
+      "size": 74027
     },
     {
       "path": "ui/mvz-round.ico",
@@ -169,6 +259,61 @@
       "path": "ui/mvz_updater.py",
       "sha256": "b906f9f250cb86c27a8a8666ba3e7f617e588a03080644652e85ed66179f739d",
       "size": 13164
+    },
+    {
+      "path": "ui/themes.py",
+      "sha256": "c0561882ac86ee859221ff1515b3b5b0e7b520070dcdfc5a520583f65d88f7fe",
+      "size": 12033
+    },
+    {
+      "path": "utils/targets.txt",
+      "sha256": "4c953196e2649478c267450fc80cef121ef96bc50656ef75336b9589c0808cea",
+      "size": 1246
+    },
+    {
+      "path": "utils/test results/test_results_2026-01-27_18-32-07.txt",
+      "sha256": "4c54759233381e2163f4ec67749d76d5686d9181c53f19f10d9cf56134e6fd34",
+      "size": 21483
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-01_19-57-00.txt",
+      "sha256": "620cdf9aab379e18774db3a25c06e12a0a9941819c12ecbd47216a11fc58cbd7",
+      "size": 21602
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-01_20-45-54.txt",
+      "sha256": "9eefc11869017ed70ea6a1538446f0c026179bdebdfed0b96422e682d1d45a28",
+      "size": 21486
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-01_21-06-21.txt",
+      "sha256": "e8d0da06df5f8982b89507dc545159c52d06ad78d937ed8c90dd57e434d33384",
+      "size": 18940
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-04_19-27-49.txt",
+      "sha256": "90de4f3ae8a7e8258bd06293ef0a7edc4544bf5f95a244826fbe4db8f82e73fb",
+      "size": 21071
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-04_19-56-40.txt",
+      "sha256": "498ee4f335ea4070435a4c3c39baf35d73b92945b720e7d6ea7b3fecae280bfb",
+      "size": 21635
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-04_20-10-48.txt",
+      "sha256": "ff949238ac8a00881b088ccc8b010c82ae02e3227c4cb0dc341344a31df57079",
+      "size": 18924
+    },
+    {
+      "path": "utils/test results/test_results_2026-02-04_21-37-54.txt",
+      "sha256": "dd33d6bde83830773d0050a2cffa58a6dfb87a3bfb63c5a8c408526d2b6eef6e",
+      "size": 18929
+    },
+    {
+      "path": "utils/test zapret.ps1",
+      "sha256": "a6c7aecea36c1e1fd49f0facdb0a0ff86538d07d80283453e09e16a8abaf2826",
+      "size": 21876
     }
   ],
   "delete": []

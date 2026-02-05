@@ -1,46 +1,90 @@
 # ui/main_window.py
 from __future__ import annotations
 
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QTextEdit, QLabel, QFrame, QMessageBox, QStackedWidget,
-    QSystemTrayIcon, QMenu, QCheckBox, QApplication, QComboBox,
-    QDialog, QTextBrowser, QProgressDialog
-)
-from PySide6.QtCore import Qt, QProcess, QTimer, QSettings
-from PySide6.QtGui import QAction, QPixmap, QIcon
-
 import os
 import sys
-import datetime
 import time
-import ctypes
-import subprocess
 import shlex
+import datetime
+import subprocess
 import json
 import urllib.request
 import urllib.error
-import tempfile
-from typing import Optional, List, Tuple
+import re
+from subprocess import CREATE_NO_WINDOW
+from typing import Optional, List, Tuple, Dict
+
+from PySide6.QtCore import Qt, QTimer, QSettings, QProcess
+from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QProgressDialog,
+    QStackedWidget,
+    QTextBrowser,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QSystemTrayIcon,
+)
 
 
-# --- Updater (лежит в ui/mvz_updater.py) ---
-_UPDATER_IMPORT_ERROR = None
+# --- Themes (обязательные функции по ТЗ) ---
 try:
-    from ui.mvz_updater import apply_update_from_release
-except Exception as e:
-    apply_update_from_release = None
-    _UPDATER_IMPORT_ERROR = f"ui.mvz_updater import error: {e}"
+    from ui.themes import get_stylesheet, normalize_theme, THEME_ORDER, THEME_TITLES_RU
+except Exception:
+    def normalize_theme(name: str) -> str:
+        return name if name in ("dark", "light", "purple", "toxic") else "dark"
 
+    def get_stylesheet(name: str) -> str:
+        return ""
 
-# --- Windows registry (autostart) ---
+    THEME_ORDER = ["dark", "light", "purple", "toxic"]
+    THEME_TITLES_RU = {"dark": "Тёмная", "light": "Светлая", "purple": "Фиолетовая", "toxic": "Токсичная"}
+
+# --- Optional deps ---
 try:
     import winreg  # type: ignore
 except Exception:
     winreg = None
 
+try:
+    import psutil  # type: ignore
+except Exception:
+    psutil = None
 
-# -------------------- Update config --------------------
+# --- Updater ---
+try:
+    # Твой файл называется ui/mvz_updater.py
+    from ui.mvz_updater import apply_update_from_release
+except ImportError:
+    apply_update_from_release = None
+    print("Ошибка: не найден файл ui/mvz_updater.py")
+except Exception as e:
+    apply_update_from_release = None
+    print(f"Ошибка импорта апдейтера: {e}")
+
+
+try:
+    from discord_rpc import DiscordRPC, PYPRESENCE_AVAILABLE  # type: ignore
+except Exception:
+    DiscordRPC = None
+    PYPRESENCE_AVAILABLE = False
+
+
+APP_NAME = "MVZ"
+SETTINGS_ORG = "MVZ"
+SETTINGS_APP = "MVZapret"
+
 UPDATE_OWNER = "MVComplex"
 UPDATE_REPO = "MVZTEST"
 
@@ -49,426 +93,10 @@ UPDATE_MANIFEST_ASSET = "manifest.json"
 
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{UPDATE_OWNER}/{UPDATE_REPO}/releases/latest"
 UPDATE_USER_AGENT = "MVZ-Updater"
-
-APP_VERSION = "1.4"
-CREATE_NO_WINDOW = 0x08000000
-
-ALT11_BAT_CANDIDATES = [
-    "general (ALT11).bat",
-    "general-ALT11.bat",
-    "general_ALT11.bat",
-]
-
-
-# -------------------- Optional deps --------------------
-try:
-    import psutil
-except ImportError:
-    psutil = None
-
-# поддержка двух вариантов имени модуля
-try:
-    from discord_rpc import DiscordRPC, PYPRESENCE_AVAILABLE
-except Exception:
-    try:
-        from discordrpc import DiscordRPC, PYPRESENCE_AVAILABLE  # type: ignore
-    except Exception:
-        DiscordRPC = None
-        PYPRESENCE_AVAILABLE = False
-
-
-# -------------------- Styles --------------------
-DARK_STYLESHEET = """
-QMainWindow { background: #0F172A; }
-QFrame#Sidebar { background: #020617; border-right: 1px solid #1E293B; min-width: 220px; max-width: 220px; }
-
-QPushButton[objectName="Nav"] {
-    background: transparent; color: #9CA3AF; border: none; border-radius: 10px;
-    padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 500; margin: 4px 10px;
-}
-QPushButton[objectName="Nav"]:hover { background: rgba(59,130,246,0.12); color: #BFDBFE; }
-QPushButton[objectName="Nav"]:checked {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #2563EB, stop:1 #0EA5E9);
-    color: #FFFFFF; font-weight: 600;
-}
-
-QPushButton[objectName="Action"] {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #22C55E, stop:1 #16A34A);
-    color: #F9FAFB; border: none; border-radius: 14px; padding: 10px 22px;
-    font-size: 14px; font-weight: 600; min-width: 150px;
-}
-QPushButton[objectName="Action"]:hover {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #4ADE80, stop:1 #22C55E);
-}
-QPushButton[objectName="Action"]:pressed { background: #15803D; }
-QPushButton[objectName="Action"]:disabled { background: #1F2933; color: #64748B; }
-
-QCheckBox { color: #CBD5E1; spacing: 8px; font-size: 13px; }
-QCheckBox::indicator {
-    width: 18px; height: 18px; border-radius: 4px;
-    border: 2px solid #475569; background: #020617;
-}
-QCheckBox::indicator:hover { border-color: #64748B; }
-QCheckBox::indicator:checked { background: #1D4ED8; border-color: #60A5FA; }
-
-QTextEdit {
-    background: #020617; color: #E2E8F0; border: 1px solid #1F2937;
-    border-radius: 12px; padding: 10px; font-size: 13px; selection-background-color: #2563EB;
-}
-QComboBox {
-    background: #020617; color: #E5E7EB; border: 1px solid #1F2937;
-    border-radius: 10px; padding: 6px 32px 6px 10px; font-size: 13px;
-}
-QComboBox:hover { border-color: #3B82F6; }
-
-QLabel { color: #E2E8F0; }
-QTextBrowser { background: #0F172A; color: #E2E8F0; border: 1px solid #1E293B; border-radius: 8px; }
-
-/* Info cards (по умолчанию фиолетовая стилистика, как было) */
-QFrame[class="InfoCard"] {
-    background: rgba(76,29,149,0.6);
-    border: 2px solid #7C3AED;
-    border-radius: 16px;
-    padding: 20px;
-}
-QFrame[class="InfoCard"]:hover {
-    border-color: #A855F7;
-    background: rgba(129,140,248,0.15);
-}
-QLabel[class="InfoTitle"] { color: #F9FAFB; font-size: 18px; font-weight: 700; }
-QLabel[class="InfoLink"] { color: #C4B5FD; }
-QLabel[class="InfoLink"] a { color: #C4B5FD; text-decoration: none; }
-"""
-
-LIGHT_STYLESHEET = """
-QMainWindow { background: #F9FAFB; }
-QFrame#Sidebar { background: #EFF2F7; border-right: 1px solid #D1D5DB; min-width: 220px; max-width: 220px; }
-
-QPushButton[objectName="Nav"] {
-    background: transparent; color: #4B5563; border: none; border-radius: 10px;
-    padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 500; margin: 4px 10px;
-}
-QPushButton[objectName="Nav"]:hover { background: #E0F2FE; color: #1D4ED8; }
-QPushButton[objectName="Nav"]:checked { background: #2563EB; color: #FFFFFF; font-weight: 600; }
-
-QPushButton[objectName="Action"] {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #3B82F6, stop:1 #2563EB);
-    color: #FFFFFF; border: none; border-radius: 14px; padding: 10px 22px;
-    font-size: 14px; font-weight: 600; min-width: 150px;
-}
-QPushButton[objectName="Action"]:hover {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #60A5FA, stop:1 #3B82F6);
-}
-QPushButton[objectName="Action"]:pressed { background: #1D4ED8; }
-QPushButton[objectName="Action"]:disabled { background: #E5E7EB; color: #9CA3AF; }
-
-QCheckBox { color: #111827; spacing: 8px; font-size: 13px; }
-QCheckBox::indicator {
-    width: 18px; height: 18px; border-radius: 4px;
-    border: 2px solid #9CA3AF; background: #F9FAFB;
-}
-QCheckBox::indicator:hover { border-color: #6B7280; }
-QCheckBox::indicator:checked { background: #3B82F6; border-color: #1D4ED8; }
-
-QTextEdit {
-    background: #FFFFFF; color: #111827; border: 1px solid #D1D5DB;
-    border-radius: 12px; padding: 10px; font-size: 13px;
-}
-QComboBox {
-    background: #FFFFFF; color: #111827; border: 1px solid #D1D5DB;
-    border-radius: 10px; padding: 6px 32px 6px 10px; font-size: 13px;
-}
-QComboBox:hover { border-color: #3B82F6; }
-
-QLabel { color: #111827; }
-QTextBrowser { background: #FFFFFF; color: #111827; border: 1px solid #D1D5DB; border-radius: 8px; }
-
-/* Info cards (как было) */
-QFrame[class="InfoCard"] {
-    background: rgba(76,29,149,0.6);
-    border: 2px solid #7C3AED;
-    border-radius: 16px;
-    padding: 20px;
-}
-QFrame[class="InfoCard"]:hover {
-    border-color: #A855F7;
-    background: rgba(129,140,248,0.15);
-}
-QLabel[class="InfoTitle"] { color: #F9FAFB; font-size: 18px; font-weight: 700; }
-QLabel[class="InfoLink"] { color: #C4B5FD; }
-QLabel[class="InfoLink"] a { color: #C4B5FD; text-decoration: none; }
-"""
-
-PURPLE_STYLESHEET = """
-QMainWindow { background: #050816; }
-QFrame#Sidebar { background: #0B1020; border-right: 1px solid #4C1D95; min-width: 220px; max-width: 220px; }
-
-QPushButton[objectName="Nav"] {
-    background: transparent; color: #C4B5FD; border: none; border-radius: 10px;
-    padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 500; margin: 4px 10px;
-}
-QPushButton[objectName="Nav"]:hover { background: rgba(129,140,248,0.18); color: #E0E7FF; }
-QPushButton[objectName="Nav"]:checked {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7C3AED, stop:1 #6366F1);
-    color: #FFFFFF; font-weight: 600;
-}
-
-QPushButton[objectName="Action"] {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #8B5CF6, stop:1 #6366F1);
-    color: #F9FAFB; border: none; border-radius: 14px; padding: 10px 22px;
-    font-size: 14px; font-weight: 600; min-width: 150px;
-}
-QPushButton[objectName="Action"]:hover {
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #A855F7, stop:1 #818CF8);
-}
-QPushButton[objectName="Action"]:pressed { background: #4C1D95; }
-QPushButton[objectName="Action"]:disabled { background: #111827; color: #6B7280; }
-
-QCheckBox { color: #E5E7EB; spacing: 8px; font-size: 13px; }
-QCheckBox::indicator {
-    width: 18px; height: 18px; border-radius: 4px;
-    border: 2px solid #4C1D95; background: #020617;
-}
-QCheckBox::indicator:hover { border-color: #7C3AED; }
-QCheckBox::indicator:checked { background: #7C3AED; border-color: #C4B5FD; }
-
-QTextEdit {
-    background: #020617; color: #E5E7EB; border: 1px solid #312E81;
-    border-radius: 12px; padding: 10px; font-size: 13px; selection-background-color: #6366F1;
-}
-QComboBox {
-    background: #020617; color: #E5E7EB; border: 1px solid #312E81;
-    border-radius: 10px; padding: 6px 32px 6px 10px; font-size: 13px;
-}
-QComboBox:hover { border-color: #7C3AED; }
-
-QLabel { color: #E5E7EB; }
-QTextBrowser { background: #050816; color: #E5E7EB; border: 1px solid #4C1D95; border-radius: 8px; }
-
-/* Info cards (фиолетовая стилистика) */
-QFrame[class="InfoCard"] {
-    background: rgba(76,29,149,0.6);
-    border: 2px solid #7C3AED;
-    border-radius: 16px;
-    padding: 20px;
-}
-QFrame[class="InfoCard"]:hover {
-    border-color: #A855F7;
-    background: rgba(129,140,248,0.15);
-}
-QLabel[class="InfoTitle"] { color: #F9FAFB; font-size: 18px; font-weight: 700; }
-QLabel[class="InfoLink"] { color: #C4B5FD; }
-QLabel[class="InfoLink"] a { color: #C4B5FD; text-decoration: none; }
-"""
-
-TOXIC_STYLESHEET = """
-/* Главное окно с градиентом */
-QMainWindow {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #051a05, stop:1 #0a290a);
-}
-
-/* Сайдбар (полупрозрачный) */
-QFrame#Sidebar {
-    background: rgba(0, 20, 0, 0.85);
-    border-right: 2px solid #39ff14;
-    min-width: 220px;
-    max-width: 220px;
-}
-
-/* Кнопки навигации */
-QPushButton[objectName="Nav"] {
-    background: transparent;
-    color: #39ff14;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 10px 14px;
-    text-align: left;
-    font-size: 14px;
-    font-family: "Consolas", monospace;
-    font-weight: 700;
-    margin: 4px 10px;
-}
-QPushButton[objectName="Nav"]:hover {
-    background: rgba(57, 255, 20, 0.15);
-    border: 1px solid #39ff14;
-    color: #ccffcc;
-}
-QPushButton[objectName="Nav"]:checked {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #39ff14, stop:1 #00cc00);
-    color: #000000;
-    border: 1px solid #39ff14;
-    font-weight: 900;
-}
-
-/* Кнопки действий */
-QPushButton[objectName="Action"] {
-    background: #000000;
-    color: #39ff14;
-    border: 2px solid #39ff14;
-    border-radius: 14px;
-    padding: 10px 22px;
-    font-size: 14px;
-    font-weight: 800;
-    font-family: "Consolas", monospace;
-    min-width: 150px;
-}
-QPushButton[objectName="Action"]:hover { background: #39ff14; color: #000000; }
-QPushButton[objectName="Action"]:pressed { background: #00cc00; border-color: #00cc00; }
-QPushButton[objectName="Action"]:disabled { border-color: #1a4d1a; color: #1a4d1a; background: transparent; }
-
-/* Чекбоксы */
-QCheckBox { color: #39ff14; spacing: 8px; font-size: 13px; font-family: "Consolas"; }
-QCheckBox::indicator {
-    width: 18px; height: 18px;
-    border-radius: 4px;
-    border: 2px solid #39ff14;
-    background: #000000;
-}
-QCheckBox::indicator:hover { background: rgba(57, 255, 20, 0.3); }
-QCheckBox::indicator:checked { background: #39ff14; border-color: #39ff14; image: url(none); }
-
-/* Текстовые поля и логи */
-QTextEdit {
-    background: rgba(0, 0, 0, 0.6);
-    color: #39ff14;
-    border: 1px solid #39ff14;
-    border-radius: 12px;
-    padding: 10px;
-    font-family: "Consolas";
-    font-size: 12px;
-    selection-background-color: #39ff14;
-    selection-color: #000000;
-}
-
-/* Выпадающие списки */
-QComboBox {
-    background: #000000;
-    color: #39ff14;
-    border: 1px solid #39ff14;
-    border-radius: 10px;
-    padding: 6px 32px 6px 10px;
-    font-family: "Consolas";
-}
-QComboBox:hover { background: rgba(57, 255, 20, 0.1); }
-QComboBox QAbstractItemView {
-    background: #000000;
-    color: #39ff14;
-    selection-background-color: #39ff14;
-    selection-color: #000000;
-}
-
-/* Лейблы */
-QLabel { color: #ccffcc; font-family: "Segoe UI", sans-serif; }
-
-/* Текст в диалогах обновления */
-QTextBrowser {
-    background: rgba(0, 0, 0, 0.6);
-    color: #39ff14;
-    border: 1px solid #39ff14;
-    border-radius: 8px;
-}
-
-/* Info cards (TOXIC) */
-QFrame[class="InfoCard"] {
-    background: rgba(0, 20, 0, 0.70);
-    border: 2px solid #39ff14;
-    border-radius: 16px;
-    padding: 20px;
-}
-QFrame[class="InfoCard"]:hover {
-    border-color: #ccffcc;
-    background: rgba(57, 255, 20, 0.10);
-}
-QLabel[class="InfoTitle"] { color: #ccffcc; font-size: 18px; font-weight: 700; }
-QLabel[class="InfoLink"] { color: #39ff14; }
-QLabel[class="InfoLink"] a { color: #39ff14; text-decoration: none; }
-"""
-
-
-
-# -------------------- Helpers --------------------
-SW_HIDE = 0
-
-
-def ensure_hidden_console():
-    """Создать/скрыть консоль (актуально для --noconsole/--windowed на Windows)."""
-    if os.name != "nt":
-        return
-    try:
-        k32 = ctypes.windll.kernel32
-        u32 = ctypes.windll.user32
-        hwnd = k32.GetConsoleWindow()
-        if hwnd:
-            u32.ShowWindow(hwnd, SW_HIDE)
-            return
-        k32.AllocConsole()
-        hwnd = k32.GetConsoleWindow()
-        if hwnd:
-            u32.ShowWindow(hwnd, SW_HIDE)
-    except Exception:
-        pass
-
-
-def is_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
-def _pid_alive(pid: Optional[int]) -> bool:
-    if not pid or pid <= 0:
-        return False
-    if psutil:
-        try:
-            return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
-        except Exception:
-            return False
-    try:
-        out = subprocess.check_output(
-            ["cmd", "/c", f'tasklist /FI "PID eq {pid}"'],
-            creationflags=CREATE_NO_WINDOW,
-        ).decode("utf-8", errors="replace")
-        return str(pid) in out
-    except Exception:
-        return False
-
-
-_winws_process_cache = None
-_cache_time = 0.0
-CACHE_DURATION = 2.0
-
-
-def get_winws_process():
-    global _winws_process_cache, _cache_time
-    now = time.time()
-
-    if _winws_process_cache and now - _cache_time < CACHE_DURATION:
-        try:
-            if _winws_process_cache.is_running():
-                return _winws_process_cache
-        except Exception:
-            pass
-
-    _winws_process_cache = None
-    _cache_time = now
-
-    if psutil:
-        try:
-            for p in psutil.process_iter(["pid", "name"]):
-                if p.info.get("name") == "winws.exe":
-                    _winws_process_cache = p
-                    break
-        except Exception:
-            pass
-
-    return _winws_process_cache
+APP_VERSION = "1.5"
 
 
 def resource_path(relative_path: str) -> str:
-    """Абсолютный путь к ресурсу (PyInstaller/обычный режим)."""
     try:
         base_path = sys._MEIPASS  # type: ignore[attr-defined]
     except Exception:
@@ -477,45 +105,124 @@ def resource_path(relative_path: str) -> str:
 
 
 def app_dir() -> str:
-    """Папка рядом с EXE (или корень проекта в dev-режиме)."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def resolve_alt11_bat() -> str:
+def is_admin() -> bool:
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def ensure_hidden_console() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        SWHIDE = 0
+        k32 = ctypes.windll.kernel32
+        u32 = ctypes.windll.user32
+        hwnd = k32.GetConsoleWindow()
+        if hwnd:
+            u32.ShowWindow(hwnd, SWHIDE)
+    except Exception:
+        pass
+
+
+def _list_bat_files_near_app() -> List[str]:
     base = app_dir()
-    candidates: List[str] = []
-    for name in ALT11_BAT_CANDIDATES:
-        candidates.append(os.path.join(base, name))
-        candidates.append(os.path.join(base, "ZZZ", name))
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
-    return candidates[0] if candidates else os.path.join(base, ALT11_BAT_CANDIDATES[0])
+    dirs = [base, os.path.join(base, "ZZZ")]
+    found: List[str] = []
+    for d in dirs:
+        try:
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                if name.lower().endswith(".bat"):
+                    p = os.path.join(d, name)
+                    if os.path.isfile(p):
+                        found.append(os.path.abspath(p))
+        except Exception:
+            continue
+
+    out: List[str] = []
+    seen = set()
+    for p in found:
+        lp = p.lower()
+        if lp not in seen:
+            out.append(p)
+            seen.add(lp)
+    return out
+
+
+def _bat_display_name(path: str) -> str:
+    b = os.path.basename(path)
+    parent = os.path.basename(os.path.dirname(path))
+    if parent and parent.lower() == "zzz":
+        return f"{b} (ZZZ)"
+    return b
+
+
+def _safe_split_cmdline_windows(line: str) -> List[str]:
+    return shlex.split(line, posix=False)
+
+
+def _merge_split_key_value_args(args: List[str]) -> List[str]:
+    """
+    Фикс типичных поломок shlex для winws аргументов:
+    - '--wf-raw', 'tcp', 'DstPort', '=', '443' -> собираем обратно, если видим паттерны
+    - 'key=', 'value' -> 'key=value' (важно для фильтров)
+    - '--raw', 'something with spaces' (если батник дал раздельно) -> склеиваем аккуратно
+    Это снижает шанс падения winws с ошибками по filter/raw. [file:1][file:2]
+    """
+    out: List[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+
+        # key=  value  -> key=value
+        if a.endswith("=") and i + 1 < len(args):
+            out.append(a + args[i + 1])
+            i += 2
+            continue
+
+        # key = value -> key=value (редкий случай, но бывает если где-то стояли пробелы вокруг '=')
+        if i + 2 < len(args) and args[i + 1] == "=":
+            out.append(a + "=" + args[i + 2])
+            i += 3
+            continue
+
+        out.append(a)
+        i += 1
+
+    return out
 
 
 def parse_bat_variables_and_command(bat_path: str) -> Tuple[str, List[str], str]:
     bat_dir = os.path.abspath(os.path.dirname(bat_path))
-    env = {}
+    env: Dict[str, str] = {}
 
     def get_var(k: str) -> Optional[str]:
         return env.get(k.lower())
 
-    def set_var(k: str, v: str):
+    def set_var(k: str, v: str) -> None:
         env[k.lower()] = v
 
+    # базовые "бат" переменные
+    set_var("dp0", bat_dir + "\\")
     set_var("~dp0", bat_dir + "\\")
-
     bin_dir = os.path.join(bat_dir, "bin")
-    if os.path.isdir(bin_dir):
-        set_var("BIN", bin_dir + "\\")
-    else:
-        set_var("BIN", bat_dir + "\\")
+    set_var("BIN", bin_dir if os.path.isdir(bin_dir) else bat_dir)
 
+    # читаем .bat
     with open(bat_path, "r", encoding="utf-8", errors="ignore") as f:
         raw_lines = f.readlines()
 
+    # склейка строк с ^
     lines: List[str] = []
     buf = ""
     for raw in raw_lines:
@@ -523,179 +230,247 @@ def parse_bat_variables_and_command(bat_path: str) -> Tuple[str, List[str], str]
         if not s:
             continue
         low = s.lower()
-        if low.startswith("rem ") or low.startswith("::") or low.startswith("@"):
+        if low.startswith("rem ") or low.startswith("::") or low.startswith("@echo"):
             continue
+
         if s.endswith("^"):
-            buf += s[:-1] + " "
-        else:
-            buf += s
-            lines.append(buf.strip())
-            buf = ""
+            buf += s[:-1]
+            continue
+
+        buf += s
+        lines.append(buf.strip())
+        buf = ""
+
     if buf:
         lines.append(buf.strip())
 
-    winws_cmd_parts = None
+    def safe_split_cmdline_windows(line: str) -> List[str]:
+        return shlex.split(line, posix=False)
+
+    def merge_split_key_value_args(args: List[str]) -> List[str]:
+        # Склейка вида: ["--wf-tcp", "80,443"] -> ["--wf-tcp=80,443"]
+        # и ["--wf-tcp=", "80,443"] -> ["--wf-tcp=80,443"]
+        out: List[str] = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+
+            # "--key=" + "value"
+            if a.endswith("=") and i + 1 < len(args):
+                out.append(a + args[i + 1])
+                i += 2
+                continue
+
+            # "--key" + "value"  (если следующий токен не флаг)
+            if a.startswith("-") and i + 1 < len(args) and not args[i + 1].startswith("-"):
+                out.append(a + "=" + args[i + 1])
+                i += 2
+                continue
+
+            out.append(a)
+            i += 1
+        return out
+
+    def expand_vars(resolved: str) -> str:
+        # быстрые замены бат-путей
+        resolved = resolved.replace("%~dp0", bat_dir + "\\")
+        resolved = resolved.replace("%dp0", bat_dir + "\\")
+        resolved = resolved.replace("!dp0!", bat_dir + "\\")  # если вдруг
+
+        # подстановка %VAR%
+        for _ in range(15):
+            if "%" not in resolved:
+                break
+            new_s = ""
+            i = 0
+            changed = False
+            while i < len(resolved):
+                if resolved[i] == "%":
+                    j = resolved.find("%", i + 1)
+                    if j != -1:
+                        var = resolved[i + 1:j]
+                        val = get_var(var)
+                        if val is not None:
+                            new_s += val
+                            i = j + 1
+                            changed = True
+                            continue
+                new_s += resolved[i]
+                i += 1
+            resolved = new_s
+            if not changed:
+                break
+
+        return resolved
+
+    # 1) ищем строку запуска winws.exe, параллельно собираем set-переменные
+    winws_cmd_parts: Optional[List[str]] = None
 
     for ln in lines:
-        resolved_ln = ln.replace("%~dp0", bat_dir + "\\")
-
-        # expand %VAR%
-        for _ in range(10):
-            if "%" not in resolved_ln:
-                break
-            new_ln = ""
-            i = 0
-            while i < len(resolved_ln):
-                if resolved_ln[i] == "%":
-                    j = resolved_ln.find("%", i + 1)
-                    if j != -1:
-                        var_name = resolved_ln[i + 1: j]
-                        val = get_var(var_name)
-                        if val is not None:
-                            new_ln += val
-                            i = j + 1
-                            continue
-                new_ln += resolved_ln[i]
-                i += 1
-            if new_ln == resolved_ln:
-                break
-            resolved_ln = new_ln
+        resolved = expand_vars(ln)
 
         try:
-            parts = shlex.split(resolved_ln, posix=False)
+            parts = safe_split_cmdline_windows(resolved)
         except ValueError:
             continue
+
         if not parts:
             continue
 
-        cmd_lower = parts[0].lower()
-        if cmd_lower == "if":
-            continue
+        cmd0 = parts[0].lower()
 
-        if cmd_lower == "set":
-            remainder = resolved_ln[3:].strip()
+        # set A=B / set "A=B"
+        if cmd0 == "set":
+            remainder = resolved[3:].strip()
             if remainder.startswith('"') and remainder.endswith('"'):
-                remainder = remainder[1:-1]
+                remainder = remainder[1:-1].strip()
+
             if "=" in remainder:
                 k, v = remainder.split("=", 1)
                 k, v = k.strip(), v.strip()
                 if v.startswith('"') and v.endswith('"'):
                     v = v[1:-1]
                 set_var(k, v)
-        elif "winws.exe" in resolved_ln.lower():
+            continue
+
+        # нашли запуск winws
+        if "winws.exe" in resolved.lower():
             winws_cmd_parts = parts
             break
 
     if not winws_cmd_parts:
-        raise RuntimeError("Не найдена команда winws.exe")
+        raise RuntimeError("В .bat не найдена команда запуска winws.exe")
 
+    # 2) выделяем exe и args
     idx = -1
     for i, p in enumerate(winws_cmd_parts):
         if "winws.exe" in p.lower():
             idx = i
             break
     if idx == -1:
-        raise RuntimeError("winws.exe потерялся при парсинге")
+        raise RuntimeError("Не удалось выделить путь winws.exe из строки")
 
-    exe_raw = winws_cmd_parts[idx].strip('"')
+    exe_raw = winws_cmd_parts[idx].strip()
     raw_args = winws_cmd_parts[idx + 1:]
-    exe = exe_raw
 
+    exe = exe_raw
     if not os.path.isabs(exe):
-        cands = [
+        candidates = [
             os.path.join(bat_dir, exe),
             os.path.join(bat_dir, "bin", "winws.exe"),
-            os.path.join(app_dir(), "bin", "winws.exe"),
             os.path.join(bat_dir, "winws.exe"),
+            os.path.join(app_dir(), "bin", "winws.exe"),
         ]
-        for c in cands:
+        for c in candidates:
             if os.path.isfile(c):
                 exe = c
                 break
 
+    # 3) чистим/разворачиваем аргументы
     final_args: List[str] = []
     for arg in raw_args:
-        clean = arg.replace('"', "")
+        clean = arg.replace("\\\\", "\\")
+        clean = expand_vars(clean)  # <-- важно: разворачивает %~dp0 и %VAR% внутри аргументов
 
-        if "=" in clean and any(k in clean for k in ["ipset", "hostlist", "fake", "tls", "quic", "pattern"]):
+        # если после подстановок осталось что-то типа %GameFilter% — вырежем его из списков портов/значений
+        # (иначе winws падает "bad value for --wf-tcp") [file:9]
+        if "%" in clean and "=" in clean:
+            key, val = clean.split("=", 1)
+            # убираем "висячие" %VAR% только из значений-списков (через запятую)
+            if "," in val:
+                items = [x.strip() for x in val.split(",")]
+                items = [x for x in items if not (x.startswith("%") and x.endswith("%")) and x != ""]
+                val = ",".join(items)
+                clean = key + "=" + val
+
+        # подтягивание путей (hostlist/ipset/tls/quic/etc)
+        if "=" in clean and any(k in clean for k in ("ipset", "hostlist", "fake", "tls", "quic", "pattern")):
             key, val = clean.split("=", 1)
 
+            # если val пустое или это флаг — оставляем как есть
             if not val or val.startswith("-"):
                 final_args.append(f"{key}={val}")
                 continue
 
-            if os.path.isfile(val):
-                final_args.append(f"{key}={val}")
+            # убираем кавычки вокруг пути
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val_unq = val[1:-1]
+            else:
+                val_unq = val
+
+            if os.path.isfile(val_unq):
+                # вернём в исходном виде (с кавычками или без)
+                final_args.append(f"{key}={val_unq}")
                 continue
 
-            possible_paths = [
-                os.path.join(bat_dir, val),
-                os.path.join(bat_dir, "lists", val),
-                os.path.join(bat_dir, "bin", val),
-                os.path.join(app_dir(), val),
-                os.path.join(app_dir(), "lists", val),
+            possible = [
+                os.path.join(bat_dir, val_unq),
+                os.path.join(bat_dir, "lists", val_unq),
+                os.path.join(bat_dir, "bin", val_unq),
+                os.path.join(app_dir(), val_unq),
+                os.path.join(app_dir(), "lists", val_unq),
             ]
-            found_path = None
-            for p in possible_paths:
+            found = None
+            for p in possible:
                 if os.path.isfile(p):
-                    found_path = p
+                    found = p
                     break
-            final_args.append(f"{key}={found_path or val}")
+
+            final_args.append(f"{key}={found or val_unq}")
         else:
             final_args.append(clean)
+
+    # 4) склейка "--key value" в "--key=value"
+    final_args = merge_split_key_value_args(final_args)
 
     return exe, final_args, bat_dir
 
 
-# -------------------- Main Window --------------------
 class MainWindow(QMainWindow):
-    # старое имя оставлено, чтобы не ломать совместимость в коде/логах
-    TASK_NAME = "MVZ_Autostart"
-
-    # HKCU Run
     RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
     RUN_VALUE_NAME = "MVZ"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self.settings = QSettings("MVZ", "MVZapret")
-        self.current_theme_name = self.settings.value("theme", "dark")
-        self.alt11_bat_path = resolve_alt11_bat()
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
-        # state
+        # --- Best config (лучший .bat) ---
+        # Храним последний лучший батник в настройках, чтобы был виден на главной/в тестах
+        self.best_bat_name: str = self.settings.value("best_bat_name", "", type=str) or ""
+        self._best_re = re.compile(r"^\s*Best config:\s*(.+?)\s*$")
+
+        self.tests_process: QProcess | None = None
+
+        # 0=ничего, 1=выбрали "Select test type", 2=выбрали "Select test run mode"
+        self.tests_sent_choice = 0
+
+        # Скрываем служебный текст и показываем только результаты Config:
+        self.tests_show_results_only = False
+        self.tests_in_results = False
+
+        self.current_theme_name = normalize_theme(self.settings.value("theme", "dark"))
+        self.selected_bat_path: str = self.settings.value("selected_bat_path", "", type=str) or ""
+
+        self.winws_pid: Optional[int] = None
+        self.winws_process: Optional[subprocess.Popen] = None
         self.detached_running = False
         self.session_start_time: Optional[datetime.datetime] = None
-        self.winws_pid: Optional[int] = None
-        self.winws_process_obj: Optional[subprocess.Popen] = None
 
-        self._really_quit = False
-        self._hires_timer_enabled = False
+        self.really_quit = False
         self.net_optimized_once = False
+        self.hires_timer_enabled = False
 
         self.discord_rpc = None
 
-        # icon
-        icon_path = None
-        for p in (
-                resource_path("mvz-round.ico"),
-                os.path.join(app_dir(), "mvz-round.ico"),
-                os.path.join(os.path.dirname(__file__), "mvz-round.ico"),
-        ):
-            if os.path.isfile(p):
-                icon_path = p
-                break
-        if icon_path:
-            self.setWindowIcon(QIcon(icon_path))
+        self._ui_build()
+        self._tray_build()
 
-        self.setWindowTitle("MVZapret (MVZ)")
-        self.resize(1200, 750)
-
-        # timers (ВАЖНО: все методы существуют)
+        # Таймеры (обязательные имена/методы)
         self.crash_check_timer = QTimer(self)
         self.crash_check_timer.setSingleShot(True)
         self.crash_check_timer.setInterval(2500)
-        self.crash_check_timer.timeout.connect(self._check_startup_status)
+        self.crash_check_timer.timeout.connect(self.checkstartupstatus)
 
         self.monitor_timer = QTimer(self)
         self.monitor_timer.setInterval(3000)
@@ -705,28 +480,90 @@ class MainWindow(QMainWindow):
         self.uptime_timer.setInterval(1000)
         self.uptime_timer.timeout.connect(self.update_uptime_footer)
 
-        self.discord_update_timer = QTimer(self)
-        self.discord_update_timer.setInterval(30000)
-        self.discord_update_timer.timeout.connect(self._update_discord_status)
-
         self.update_timer = QTimer(self)
-        self.update_timer.setInterval(6 * 60 * 60 * 1000)  # 6 hours
+        self.update_timer.setInterval(6 * 60 * 60 * 1000)
         self.update_timer.timeout.connect(self.check_updates_silent)
 
-        # layout
+        # Init theme/logo/status
+        self.apply_theme_by_name(self.current_theme_name)
+        self.update_buttons(False)
+        self.update_status_indicator(False)
+
+        # Start timers
+        self.uptime_timer.start()
+        self.update_timer.start()
+        QTimer.singleShot(5000, self.check_updates_silent)
+
+        # Settings init (как у тебя было)
+        self.refresh_bat_list_ui()
+
+        autorun_bypass = self.settings.value("autorun_bypass", True, type=bool)  # True по умолчанию!
+        self.autorun_cb.blockSignals(True)
+        self.autorun_cb.setChecked(autorun_bypass)
+        self.autorun_cb.setEnabled(self.is_autostart_enabled())
+        self.autorun_cb.blockSignals(False)
+
+        self._init_discord_like_original()
+
+        # Автозапуск профиля при --autorun ИЛИ при включённой автозагрузке Windows
+        if ("--autorun" in sys.argv and autorun_bypass) or self.is_autostart_enabled():
+            QTimer.singleShot(1000, self.run_selected_profile)
+
+    # ---------------- Best config helpers ----------------
+
+    def set_best_bat(self, name: str) -> None:
+        name = (name or "").strip()
+        self.best_bat_name = name
+        self.settings.setValue("best_bat_name", name)
+
+        txt = f"Лучший профиль: {name}" if name else "Лучший профиль: —"
+
+        lbl = getattr(self, "bestbat_home_lbl", None)
+        if lbl is not None:
+            lbl.setText(txt)
+
+        lbl = getattr(self, "bestbat_tests_lbl", None)
+        if lbl is not None:
+            lbl.setText(txt)
+
+    def try_parse_best_bat(self, line: str) -> None:
+        """Поймать строку вида: Best config: xxx.bat"""
+        if not line:
+            return
+        m = self._best_re.match(line)
+        if m:
+            self.set_best_bat(m.group(1))
+
+
+    # ---------------- UI ----------------
+
+    def _ui_build(self) -> None:
+        self.setWindowTitle("MVZapret / MVZ")
+        self.resize(1200, 750)
+
+        icon_path = None
+        for p in (
+            resource_path("mvz-round.ico"),
+            os.path.join(app_dir(), "mvz-round.ico"),
+            os.path.join(os.path.dirname(__file__), "mvz-round.ico"),
+        ):
+            if os.path.isfile(p):
+                icon_path = p
+                break
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
+
         root = QHBoxLayout()
         central = QWidget()
         central.setLayout(root)
         self.setCentralWidget(central)
 
-        # sidebar
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(0, 16, 0, 16)
         side.setSpacing(0)
 
-        # logo
         logo_container = QWidget()
         logo_layout = QVBoxLayout(logo_container)
         logo_layout.setContentsMargins(0, 16, 0, 32)
@@ -734,160 +571,94 @@ class MainWindow(QMainWindow):
 
         self.logo_label = QLabel()
         self.logo_label.setAlignment(Qt.AlignCenter)
-
         logo_layout.addWidget(self.logo_label, 0, Qt.AlignHCenter)
         side.addWidget(logo_container)
 
-        # nav buttons
         self.btn_home = QPushButton("Главная")
-        self.btn_home.setObjectName("Nav")
-        self.btn_home.setCheckable(True)
-        self.btn_home.setChecked(True)
-
         self.btn_settings = QPushButton("Настройки")
-        self.btn_settings.setObjectName("Nav")
-        self.btn_settings.setCheckable(True)
-
-        self.btn_logs = QPushButton("Журнал")
-        self.btn_logs.setObjectName("Nav")
-        self.btn_logs.setCheckable(True)
-
+        self.btn_logs = QPushButton("Логи")
+        self.btn_Tests = QPushButton("Тестирование")
         self.btn_info = QPushButton("Инфо")
-        self.btn_info.setObjectName("Nav")
-        self.btn_info.setCheckable(True)
 
-        for b in (self.btn_home, self.btn_settings, self.btn_logs, self.btn_info):
+        for b in (self.btn_home, self.btn_settings, self.btn_logs, self.btn_Tests, self.btn_info):
+            b.setObjectName("Nav")
+            b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             b.setMinimumHeight(48)
             side.addWidget(b)
 
+        self.btn_home.setChecked(True)
         side.addStretch(1)
 
-        # pages
         self.pages = QStackedWidget()
-        page_home = self._create_home_page()
-        page_settings = self._create_settings_page()
-        page_log = self._create_log_page()
-        page_info = self._create_info_page()
-        for w in (page_home, page_settings, page_log, page_info):
+
+        page_home = self.create_home_page()
+        page_settings = self.create_settings_page()
+        page_logs = self.create_logs_page()
+        page_tests = self.create_tests_page()  # <-- ДОБАВИЛИ
+        page_info = self.create_info_page()
+
+        for w in (page_home, page_settings, page_logs, page_tests, page_info):  # <-- ДОБАВИЛИ
             self.pages.addWidget(w)
 
         root.addWidget(sidebar, 0)
         root.addWidget(self.pages, 1)
 
-        # connects
         self.btn_home.clicked.connect(lambda: self.switch_tab(0))
         self.btn_settings.clicked.connect(lambda: self.switch_tab(1))
         self.btn_logs.clicked.connect(lambda: self.switch_tab(2))
-        self.btn_info.clicked.connect(lambda: self.switch_tab(3))
+        self.btn_Tests.clicked.connect(lambda: self.switch_tab(3))
+        self.btn_info.clicked.connect(lambda: self.switch_tab(4))
 
-        self.run_btn.clicked.connect(self.run_alt11_internal)
+        self.run_btn.clicked.connect(self.run_selected_profile)
         self.stop_btn.clicked.connect(self.stop_winws)
         self.optimize_btn.clicked.connect(self.optimize_network)
 
-        # tray
-        self.tray = QSystemTrayIcon(self)
-        self.tray.setIcon(self.windowIcon())
-        self.tray.activated.connect(self.on_tray_activated)
-
-        tray_menu = QMenu(self)
-        tray_menu.addAction(QAction("Открыть MVZ", self, triggered=self.show_main_from_tray))
-        tray_menu.addSeparator()
-        tray_menu.addAction(QAction("Запустить", self, triggered=self.run_alt11_internal))
-        tray_menu.addAction(QAction("Остановить", self, triggered=self.stop_winws))
-        tray_menu.addSeparator()
-
-        self.act_autostart = QAction("Автозапуск при входе", self, checkable=True)
-        self.act_autostart.setChecked(self.is_autostart_enabled())
-        self.act_autostart.toggled.connect(self.set_autostart_enabled)
-        tray_menu.addAction(self.act_autostart)
-
-        tray_menu.addSeparator()
-        tray_menu.addAction(QAction("Выход", self, triggered=self.exit_from_tray))
-
-        self.tray.setContextMenu(tray_menu)
-        self.tray.show()
-
-        # theme + initial ui
-        self.apply_theme_by_name(self.current_theme_name)
-        self.update_buttons(False)
-        self.update_status_indicator(False)
-
-        # timers start
-        self.uptime_timer.start()
-        self.update_timer.start()
-        QTimer.singleShot(5_000, self.check_updates_silent)
-
-        # settings sync (auto_run)
-        is_win_autostart = self.is_autostart_enabled()
-        auto_run_bypass = self.settings.value("auto_run_bypass", False, type=bool)
-
-        self.auto_run_cb.blockSignals(True)
-        self.auto_run_cb.setChecked(auto_run_bypass)
-        self.auto_run_cb.setEnabled(is_win_autostart)
-        self.auto_run_cb.blockSignals(False)
-        self.auto_run_cb.toggled.connect(self.on_toggle_auto_run)
-
-        # discord init (автовключение + возможность выключить)
-        discord_enabled = self.settings.value("discord_rpc_enabled", True, type=bool)
-
-        if PYPRESENCE_AVAILABLE and DiscordRPC:
-            self.discord_rpc_cb.setEnabled(True)
-
-            self.discord_rpc_cb.blockSignals(True)
-            self.discord_rpc_cb.setChecked(discord_enabled)
-            self.discord_rpc_cb.blockSignals(False)
-
-            if discord_enabled:
-                QTimer.singleShot(0, lambda: self.on_toggle_discord_rpc(True))
-        else:
-            self.discord_rpc_cb.setEnabled(False)
-            self.discord_rpc_cb.blockSignals(True)
-            self.discord_rpc_cb.setChecked(False)
-            self.discord_rpc_cb.blockSignals(False)
-
-            self.settings.setValue("discord_rpc_enabled", False)
-            self.append_log("[Discord RPC] модуль не установлен/недоступен")
-
-        # auto-run launch
-        # если включено "автоматически запускать обход", то запускаем через 1 сек.
-        # (работает и при автозапуске, и при ручном запуске)
-        if auto_run_bypass and (("--autorun" in sys.argv) or is_win_autostart):
-            self.append_log("[Autostart] Запуск обхода через 1 сек...")
-            QTimer.singleShot(1000, self.run_alt11_internal)
-
-    # ---------- Pages ----------
-    def _create_home_page(self):
+    def create_home_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)
 
+        # --- Title row ---
         title_row = QHBoxLayout()
         title = QLabel("MVZapret")
         title.setStyleSheet("font-size:24px;font-weight:700;")
         title_row.addWidget(title)
         title_row.addStretch()
 
-        self.current_profile_label = QLabel(f"ALT11: {os.path.basename(self.alt11_bat_path)}")
+        self.current_profile_label = QLabel("")
         self.current_profile_label.setStyleSheet("font-size:12px;color:#94A3B8;")
         title_row.addWidget(self.current_profile_label)
+
         lay.addLayout(title_row)
 
+        # --- Best config label (из тестов) ---
+        self.bestbat_home_lbl = QLabel()
+        self.bestbat_home_lbl.setStyleSheet("font-size:16px;font-weight:700;color:#94A3B8;")
+        self.bestbat_home_lbl.setText(
+            f"Лучший профиль: {self.best_bat_name}" if (self.best_bat_name or "").strip() else "Лучший профиль: —"
+        )
+        lay.addWidget(self.bestbat_home_lbl)
+
+        # --- Status row ---
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
 
         self.status_indicator = QLabel()
         self.status_indicator.setFixedSize(20, 20)
-        self.status_indicator.setStyleSheet("background:#DC2626;border-radius:10px;border:2px solid #450A0A;")
+        self.status_indicator.setStyleSheet(
+            "background:#DC2626;border-radius:10px;border:2px solid #450A0A;"
+        )
 
-        self.status_label = QLabel("Остановлен")
+        self.status_label = QLabel("Остановлено")
         self.status_label.setStyleSheet("font-size:16px;font-weight:600;")
 
         status_row.addWidget(self.status_indicator)
         status_row.addWidget(self.status_label)
         status_row.addStretch()
 
+        # --- Buttons row ---
         btns = QHBoxLayout()
         btns.setSpacing(16)
 
@@ -909,6 +680,7 @@ class MainWindow(QMainWindow):
         btns.addWidget(self.stop_btn)
         btns.addStretch()
 
+        # --- Optimize button + priority label ---
         self.optimize_btn = QPushButton("Оптимизация пинга")
         self.optimize_btn.setObjectName("Action")
         self.optimize_btn.setCursor(Qt.PointingHandCursor)
@@ -916,9 +688,10 @@ class MainWindow(QMainWindow):
         self.priority_label = QLabel("")
         self.priority_label.setStyleSheet("font-size:12px;")
 
+        # ФУТЕР: "Время работы: HH:MM:SS" как ты просил
         footer = QHBoxLayout()
         footer.addStretch()
-        self.uptime_footer = QLabel("Время работы: —")
+        self.uptime_footer = QLabel("Время работы: 00:00:00")
         self.uptime_footer.setStyleSheet("font-size:14px;font-weight:600;")
         footer.addWidget(self.uptime_footer)
         footer.addStretch()
@@ -929,10 +702,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.priority_label)
         lay.addStretch()
         lay.addLayout(footer)
-
         return page
 
-    def _create_settings_page(self):
+    def create_settings_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 24, 24, 24)
@@ -942,26 +714,37 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size:24px;font-weight:700;")
         lay.addWidget(title)
 
-        self.autostart_cb = QCheckBox("Автозапуск при входе в Windows (MVZ)")
+        self.autostart_cb = QCheckBox("Автозапуск MVZ при входе в Windows ")
         self.autostart_cb.setChecked(self.is_autostart_enabled())
         self.autostart_cb.toggled.connect(self.on_toggle_autostart)
         lay.addWidget(self.autostart_cb)
 
-        self.auto_run_cb = QCheckBox("Запускать обход автоматически при старте MVZ")
-        lay.addWidget(self.auto_run_cb)
+        self.autorun_cb = QCheckBox("Запускать обход сразу после старта MVZ")
+        lay.addWidget(self.autorun_cb)
+        self.autorun_cb.toggled.connect(self.on_toggle_autorun)
 
         self.discord_rpc_cb = QCheckBox("Discord Rich Presence")
         self.discord_rpc_cb.toggled.connect(self.on_toggle_discord_rpc)
         lay.addWidget(self.discord_rpc_cb)
 
+        # ---- ВЫБОР ПРОФИЛЯ (.bat) ----
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Профиль (.bat):"))
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(320)
+        self.profile_combo.currentIndexChanged.connect(self.on_profile_changed)
+        profile_row.addWidget(self.profile_combo, 1)
+        lay.addLayout(profile_row)
+
+        # Theme row (как было)
         theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Тема оформления:"))
+        theme_row.addWidget(QLabel("Тема:"))
 
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Тёмная", "Светлая", "Фиолетовая", "Токсичная"])
-
-        name_to_index = {"dark": 0, "light": 1, "purple": 2, "toxic": 3}
-        self.theme_combo.setCurrentIndex(name_to_index.get(self.current_theme_name, 0))
+        self.theme_combo.addItems([THEME_TITLES_RU.get(t, t) for t in THEME_ORDER])
+        theme_to_index = {name: i for i, name in enumerate(THEME_ORDER)}
+        self.theme_combo.setCurrentIndex(theme_to_index.get(self.current_theme_name, 0))
         self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
         theme_row.addWidget(self.theme_combo, 1)
 
@@ -969,15 +752,14 @@ class MainWindow(QMainWindow):
         lay.addStretch()
         return page
 
-    def _create_log_page(self):
+    def create_logs_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(16)
 
-        title = QLabel("Журнал событий")
+        title = QLabel("Логи")
         title.setStyleSheet("font-size:24px;font-weight:700;")
-
         self.log = QTextEdit()
         self.log.setReadOnly(True)
 
@@ -985,347 +767,417 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.log, 1)
         return page
 
-    def _apply_info_theme(self):
-        # если инфо-виджеты ещё не созданы — просто выходим
-        if not hasattr(self, "_info_cards"):
-            return
+    def create_tests_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
 
-        toxic = (self.current_theme_name == "toxic")
+        title = QLabel("Тестирование")
+        title.setStyleSheet("font-size:24px;font-weight:700;")
+        lay.addWidget(title)
 
-        if toxic:
-            card_ss = (
-                "QFrame{background:rgba(0,20,0,0.70);border:2px solid #39ff14;"
-                "border-radius:16px;padding:20px;}"
-                "QFrame:hover{border-color:#ccffcc;background:rgba(57,255,20,0.10);}"
-            )
-            title_ss = "color:#ccffcc;font-size:18px;font-weight:700;"
-            link_tpl = '<a href="{url}" style="color:#39ff14;text-decoration:none;">{url}</a>'
-        else:
-            card_ss = (
-                "QFrame{background:rgba(76,29,149,0.6);border:2px solid #7C3AED;"
-                "border-radius:16px;padding:20px;}"
-                "QFrame:hover{border-color:#A855F7;background:rgba(129,140,248,0.15);}"
-            )
-            title_ss = "color:#F9FAFB;font-size:18px;font-weight:700;"
-            link_tpl = '<a href="{url}" style="color:#C4B5FD;text-decoration:none;">{url}</a>'
+        # Лучший профиль (обновляется через set_best_bat())
+        self.bestbat_tests_lbl = QLabel()
+        self.bestbat_tests_lbl.setStyleSheet("font-size:16px;font-weight:700;color:#94A3B8;")
+        best_name = (getattr(self, "best_bat_name", "") or "").strip()
+        self.bestbat_tests_lbl.setText(f"Лучший профиль: {best_name}" if best_name else "Лучший профиль: —")
+        lay.addWidget(self.bestbat_tests_lbl)  # <-- ВОТ ЭТОГО НЕ ХВАТАЛО
 
-        for card in self._info_cards:
-            card.setStyleSheet(card_ss)
+        # Кнопки управления
+        row = QHBoxLayout()
+        row.setSpacing(16)
 
-        for lbl in self._info_titles:
-            lbl.setStyleSheet(title_ss)
+        self.btn_tests_start = QPushButton("Запустить тестирование")
+        self.btn_tests_start.setObjectName("Action")
+        self.btn_tests_start.clicked.connect(self.start_tests)
 
-        for lbl, url in self._info_links:
-            lbl.setText(link_tpl.format(url=url))
+        self.btn_tests_stop = QPushButton("Остановить")
+        self.btn_tests_stop.setObjectName("Action")
+        self.btn_tests_stop.setEnabled(False)
+        self.btn_tests_stop.clicked.connect(self.stop_tests)
 
-    def _create_info_page(self):
+        row.addWidget(self.btn_tests_start)
+        row.addWidget(self.btn_tests_stop)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        # Вывод теста
+        self.tests_chat = QTextEdit()
+        self.tests_chat.setReadOnly(True)
+        self.tests_chat.setPlaceholderText("Вывод теста будет здесь…")
+        lay.addWidget(self.tests_chat, 1)
+
+        return page
+
+    def create_info_page(self) -> QWidget:
+        """
+        Возвращаю страницу Инфо как в твоём старом варианте: карточки + ссылки + версия. [file:1]
+        """
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(20)
 
-        title = QLabel("Информация")
+        title = QLabel("Инфо")
         title.setStyleSheet("font-size:24px;font-weight:700;")
         lay.addWidget(title)
 
-        # хранилища для быстрого перекраса при смене темы
-        self._info_cards = []
-        self._info_titles = []
-        self._info_links = []  # список (QLabel, url)
+        self.info_cards: List[QFrame] = []
+        self.info_titles: List[QLabel] = []
+        self.info_links: List[Tuple[QLabel, str]] = []
 
-        def link_card(title_text: str, url: str):
+        def link_card(title_text: str, url: str) -> QFrame:
             card = QFrame()
+            card.setProperty("class", "InfoCard")
             l = QVBoxLayout(card)
             l.setSpacing(8)
 
             t = QLabel(title_text)
+            t.setProperty("class", "InfoTitle")
+
             lk = QLabel()
+            lk.setProperty("class", "InfoLink")
             lk.setOpenExternalLinks(True)
             lk.setTextInteractionFlags(Qt.TextBrowserInteraction)
 
+            self.info_cards.append(card)
+            self.info_titles.append(t)
+            self.info_links.append((lk, url))
+
             l.addWidget(t)
             l.addWidget(lk)
-
-            # регистрируем, чтобы потом перекрасить
-            self._info_cards.append(card)
-            self._info_titles.append(t)
-            self._info_links.append((lk, url))
-
             return card
 
-        lay.addWidget(link_card("Discord", "https://discord.gg/RtQ8fYnP8p"))
+        lay.addWidget(link_card("Сайт проекта", "https://mvcomplexsite.github.io"))
         lay.addWidget(link_card("Telegram", "https://t.me/motyait2"))
+
         lay.addStretch()
 
         ver_row = QHBoxLayout()
         ver_row.addStretch()
-        ver = QLabel(f"Version {APP_VERSION}")
+        ver = QLabel(f"Version: {APP_VERSION}")
         ver.setStyleSheet("color:#64748B;font-size:12px;")
         ver_row.addWidget(ver)
         ver_row.addStretch()
         lay.addLayout(ver_row)
 
-        # применяем стили под текущую тему (и получаем “идеальный инфо” сразу)
-        self._apply_info_theme()
-
+        self.apply_info_theme()
         return page
 
-    # ---------- UI helpers ----------
-    def switch_tab(self, idx: int):
-        self.pages.setCurrentIndex(idx)
-        self.btn_home.setChecked(idx == 0)
-        self.btn_settings.setChecked(idx == 1)
-        self.btn_logs.setChecked(idx == 2)
-        self.btn_info.setChecked(idx == 3)
+    # Вставь этот блок ВНУТРИ class MainWindow(QMainWindow):
+    # (на одном уровне с create_tests_page / run_selected_profile / stop_winws)
 
-    def apply_theme_by_name(self, name: str):
-        self.current_theme_name = name
-
-        if name == "light":
-            self.setStyleSheet(LIGHT_STYLESHEET)
-        elif name == "purple":
-            self.setStyleSheet(PURPLE_STYLESHEET)
-        elif name == "toxic":
-            self.setStyleSheet(TOXIC_STYLESHEET)
-        else:
-            self.setStyleSheet(DARK_STYLESHEET)
-
-        self._update_logo_by_theme()
-        self._apply_info_theme()  # <-- ДОБАВЬ ЭТО
-
-
-    def _update_logo_by_theme(self):
-        if not hasattr(self, "logo_label") or self.logo_label is None:
+    def _tests_append(self, s: str) -> None:
+        # Не падаем, если UI ещё не создан или вкладка не открыта
+        w = getattr(self, "tests_chat", None)
+        if w is None:
             return
+        try:
+            w.append(s)
+        except Exception:
+            pass
 
-        logo_file = "mvz_logo_toxic.png" if self.current_theme_name == "toxic" else "mvz_logo.png"
-        logo_candidates = (
-            resource_path(logo_file),
-            os.path.join(app_dir(), logo_file),
-            os.path.join(os.path.dirname(__file__), "..", logo_file),
-        )
+    def _tests_set_running_ui(self, running: bool) -> None:
+        # Не падаем, если кнопки ещё не созданы
+        b1 = getattr(self, "btn_tests_start", None)
+        b2 = getattr(self, "btn_tests_stop", None)
+        if b1 is not None:
+            b1.setEnabled(not running)
+        if b2 is not None:
+            b2.setEnabled(running)
 
-        pix = None
-        for p in logo_candidates:
+    def _tests_ps1_path(self) -> str:
+        # mvz.exe рядом с папкой utils
+        return os.path.join(app_dir(), "utils", "test zapret.ps1")
+
+    def _powershell_exe(self) -> str:
+        # Надёжнее, чем просто "powershell" (PATH может быть поломан)
+        if os.name == "nt":
+            p = os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe",
+            )
             if os.path.isfile(p):
-                tp = QPixmap(p)
-                if not tp.isNull():
-                    pix = tp
-                    break
+                return p
+        return "powershell"
 
-        if pix:
-            self.logo_label.setPixmap(pix.scaled(200, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.logo_label.setText("")
-            self.logo_label.setStyleSheet("")
-        else:
-            # fallback если файла нет
-            self.logo_label.setPixmap(QPixmap())
-            self.logo_label.setText("MVZ")
-            color = "#39ff14" if self.current_theme_name == "toxic" else "#60A5FA"
-            self.logo_label.setStyleSheet(f"font-size:28px;color:{color};font-weight:700;")
+    def start_tests(self) -> None:
+        # Если уже запущено
+        proc_now = getattr(self, "tests_process", None) or getattr(self, "testsprocess", None)
+        if proc_now is not None and proc_now.state() != QProcess.NotRunning:
+            return
 
-    def on_theme_changed(self, index: int):
-        name = "dark"
-        if index == 1:
-            name = "light"
-        elif index == 2:
-            name = "purple"
-        elif index == 3:
-            name = "toxic"
-        self.apply_theme_by_name(name)
-        self.settings.setValue("theme", name)
+        # --- Сброс состояния (и новое, и старое имя) ---
+        self.tests_sent_choice = 0
+        self.testssentchoice = 0  # мост на старый код
+        self.tests_in_results = False
+        self.testsinresults = False  # мост на старый код
 
-    def update_buttons(self, running: bool):
-        self.run_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
-        self.optimize_btn.setEnabled(running)
+        ps1 = os.path.abspath(self._tests_ps1_path())
+        if not os.path.isfile(ps1):
+            QMessageBox.critical(self, "Тестирование", f"Не найден файл:\n{ps1}")
+            self._tests_set_running_ui(False)
+            self.tests_process = None
+            self.testsprocess = None
+            return
 
-    def update_status_indicator(self, running: bool):
-        if running:
-            self.status_indicator.setStyleSheet("background:#10B981;border-radius:10px;border:2px solid #064E3B;")
-            self.status_label.setText("Запущен")
-            self.tray.setToolTip("MVZ - Запущен")
-        else:
-            self.status_indicator.setStyleSheet("background:#DC2626;border-radius:10px;border:2px solid #450A0A;")
-            self.status_label.setText("Остановлен")
-            self.tray.setToolTip("MVZ - Остановлен")
+        if not is_admin():
+            QMessageBox.warning(self, "Тестирование", "Запусти MVZ от имени администратора и повтори.")
+            self._tests_set_running_ui(False)
+            self.tests_process = None
+            self.testsprocess = None
+            return
 
-    def append_log(self, s: str):
-        if hasattr(self, "log") and self.log is not None:
-            if self.log.document().blockCount() > 1000:
-                cursor = self.log.textCursor()
-                cursor.movePosition(cursor.Start)
-                cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
-                cursor.removeSelectedText()
-            self.log.append(s)
+        # Чистим чат (и мост на старое имя виджета)
+        if getattr(self, "tests_chat", None) is not None:
+            self.tests_chat.clear()
+            self.testschat = self.tests_chat  # мост, если где-то используется self.testschat
+        elif getattr(self, "testschat", None) is not None:
+            self.testschat.clear()
+            self.tests_chat = self.testschat  # мост в обратную сторону
 
-    # ---------- Process helpers ----------
-    def _create_hidden_proc(self) -> QProcess:
+        self._tests_append("=== Старт тестирования ===")
+        self._tests_append(f"PS1: {ps1}")
+        self._tests_append("Подготовка теста... Первые результаты появятся позже (когда начнутся строки Config:).")
+
         p = QProcess(self)
-        try:
-            p.setCreateProcessArgumentsModifier(lambda a: a.setCreationFlags(a.creationFlags() | CREATE_NO_WINDOW))
-        except Exception:
-            pass
-        return p
 
-    def _kill_by_name(self, name: str):
-        killer = self._create_hidden_proc()
-        killer.setProcessChannelMode(QProcess.MergedChannels)
-        killer.start("taskkill", ["/IM", name, "/F", "/T"])
-        killer.waitForFinished(4000)
+        # --- ВАЖНО: сохраняем процесс сразу в два атрибута ---
+        self.tests_process = p
+        self.testsprocess = p
 
-    def _kill_by_pid(self, pid: int):
-        killer = self._create_hidden_proc()
-        killer.setProcessChannelMode(QProcess.MergedChannels)
-        killer.start("taskkill", ["/PID", str(pid), "/F", "/T"])
-        killer.waitForFinished(4000)
+        p.setProcessChannelMode(QProcess.MergedChannels)
 
-    def kill_running_instances(self, note: bool = True):
-        if self.winws_pid:
+        # Подавляем консольное окно на Windows
+        if os.name == "nt":
             try:
-                self._kill_by_pid(self.winws_pid)
-            except Exception:
-                pass
-        try:
-            self._kill_by_name("winws.exe")
-        except Exception:
-            pass
+                def _modifier(args):
+                    args.flags |= 0x08000000  # CREATE_NO_WINDOW
 
-        self.winws_pid = None
-        self.winws_process_obj = None
-
-        if note:
-            self.append_log("[MVZ] Завершены процессы winws.exe")
-
-    def _is_running_now(self) -> bool:
-        if self.winws_pid and psutil is not None:
-            return _pid_alive(self.winws_pid)
-
-        if self.winws_process_obj is not None:
-            try:
-                return self.winws_process_obj.poll() is None
+                p.setCreateProcessArgumentsModifier(_modifier)
             except Exception:
                 pass
 
-        checker = self._create_hidden_proc()
-        checker.setProcessChannelMode(QProcess.MergedChannels)
-        checker.start("tasklist", ["/FI", "IMAGENAME eq winws.exe"])
-        checker.waitForFinished(2000)
-        out = bytes(checker.readAllStandardOutput()).decode("utf-8", errors="replace")
-        return "winws.exe" in out
+        # Подключаемся к тому обработчику, который реально существует в твоём коде
+        handler = getattr(self, "_tests_read_output", None) or getattr(self, "testsreadoutput", None)
+        if handler is not None:
+            # Лучше readyRead (ловит любые данные), но оставим и StandardOutput для совместимости
+            p.readyRead.connect(handler)
+            p.readyRead.connect(self._tests_read_output)
 
-    # ---------- Timers/slots ----------
-    def poll_running(self):
-        running = self._is_running_now()
+        p.finished.connect(getattr(self, "_tests_finished", None) or getattr(self, "testsfinished", lambda *_: None))
+        p.errorOccurred.connect(getattr(self, "_tests_error", None) or getattr(self, "testserror", lambda *_: None))
 
-        if running != self.detached_running:
-            self.detached_running = running
-            self.update_buttons(running)
-            self.update_status_indicator(running)
-            self.append_log("[MVZ] " + ("Запущен" if running else "Остановлен"))
-            self._enable_hires_timer(running)
+        p.setWorkingDirectory(os.path.dirname(ps1))
+        p.start(self._powershell_exe(), ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1])
 
-            if not running:
-                self.monitor_timer.stop()
-
-    def update_uptime_footer(self):
-        if not hasattr(self, "uptime_footer") or self.uptime_footer is None:
+        if not p.waitForStarted(3000):
+            self._tests_append(f"[ERR] PowerShell не запустился: {p.errorString()}")
+            self._tests_set_running_ui(False)
+            self.tests_process = None
+            self.testsprocess = None
             return
 
-        if psutil is None:
-            self.uptime_footer.setText("Время работы: —")
-            return
-
-        # pid-based uptime
-        if self.winws_pid and _pid_alive(self.winws_pid):
-            try:
-                p = psutil.Process(self.winws_pid)
-                ct = datetime.datetime.fromtimestamp(p.create_time())
-                up = datetime.datetime.now() - ct
-                self.uptime_footer.setText(f"Время работы: {str(up).split('.')[0]}")
+        def _safe_write(payload: bytes) -> None:
+            proc = getattr(self, "tests_process", None) or getattr(self, "testsprocess", None)
+            if proc is None or proc.state() == QProcess.NotRunning:
                 return
-            except Exception:
-                pass
-
-        # fallback: find process
-        p = get_winws_process()
-        if not p:
-            self.uptime_footer.setText("Время работы: —")
-            return
-        try:
-            ct = datetime.datetime.fromtimestamp(p.create_time())
-            up = datetime.datetime.now() - ct
-            self.uptime_footer.setText(f"Время работы: {str(up).split('.')[0]}")
-        except Exception:
-            self.uptime_footer.setText("Время работы: —")
-
-    def _check_startup_status(self):
-        # if subprocess finished quickly => show stderr
-        if self.winws_process_obj is not None:
             try:
-                if self.winws_process_obj.poll() is not None:
-                    err_output = ""
-                    try:
-                        if self.winws_process_obj.stderr:
-                            err_output = self.winws_process_obj.stderr.read().decode("utf-8", errors="replace").strip()
-                    except Exception:
-                        err_output = ""
-
-                    self.append_log("[MVZ] ПАДЕНИЕ ПРОЦЕССА! Код: " + str(self.winws_process_obj.returncode))
-                    if err_output:
-                        self.append_log("[MVZ WINWS STDERR]: " + err_output)
-                        QMessageBox.critical(self, "Ошибка запуска winws", f"winws упал:\n\n{err_output}")
-                    else:
-                        self.append_log("[MVZ] Процесс упал без stderr (возможно права/пути).")
-
-                    self.update_buttons(False)
-                    self.update_status_indicator(False)
-                    return
+                proc.write(payload)
+                proc.waitForBytesWritten(500)
             except Exception:
                 pass
 
-        if not self._is_running_now():
-            self.append_log("[MVZ] Внимание: процесс завершился сразу после старта!")
-            self.update_buttons(False)
-            self.update_status_indicator(False)
+        # Насильно прожимаем оба меню (test type и run mode)
+        QTimer.singleShot(400, lambda: _safe_write(b"1\r\n"))
+        QTimer.singleShot(900, lambda: _safe_write(b"1\r\n"))
 
-    # ---------- Actions ----------
-    def run_alt11_internal(self):
+        self._tests_set_running_ui(True)
+
+    def _tests_error(self, err) -> None:
+        self._tests_append(f"=== Ошибка запуска теста: {err} ===")
+        self._tests_set_running_ui(False)
+        self.tests_process = None
+
+    def _tests_read_output(self) -> None:
+        p = self.tests_process
+        if p is None:
+            return
+
+        # При MergedChannels лучше читать ВСЁ, а не только stdout
+        data = bytes(p.readAll())
+        if not data:
+            return
+
+        try:
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = data.decode("cp866")
+                except UnicodeDecodeError:
+                    text = data.decode("cp1251", errors="replace")
+
+            # Автовыбор 1) test type -> 1
+            if self.tests_sent_choice < 1 and (
+                    "Select test type" in text
+                    or "Select test type:" in text
+                    or "1 Standard tests" in text
+                    or "[1] Standard tests" in text
+            ):
+                try:
+                    p.write(b"1\r\n")  # важно: Enter
+                    p.waitForBytesWritten(500)
+                    self.tests_sent_choice = 1
+                except Exception:
+                    pass
+
+            # Автовыбор 2) run mode -> 1
+            if self.tests_sent_choice < 2 and (
+                    "Select test run mode" in text
+                    or "Select test run mode:" in text
+                    or "1 All configs" in text
+                    or "[1] All configs" in text
+            ):
+                try:
+                    p.write(b"1\r\n")  # важно: Enter
+                    p.waitForBytesWritten(500)
+                    self.tests_sent_choice = 2
+                except Exception:
+                    pass
+
+            for line in text.splitlines():
+                self.try_parse_best_bat(line)
+                self._tests_append(line)
+
+        except Exception as e:
+            # Чтобы больше не было "висит и молчит" из-за падения слота
+            self._tests_append(f"[ERR] _tests_read_output crashed: {e!r}")
+
+    def _tests_finished(self, exit_code: int, exit_status) -> None:
+        self._tests_append(f"=== Завершено: code={exit_code} ===")
+        self._tests_set_running_ui(False)
+        self.tests_process = None
+
+    def stop_tests(self) -> None:
+        p = self.tests_process
+        if p is None:
+            return
+
+        self._tests_append("=== Остановка... ===")
+        p.terminate()
+        QTimer.singleShot(1500, self._tests_kill_if_alive)
+
+    def _tests_kill_if_alive(self) -> None:
+        p = self.tests_process
+        if p is None:
+            return
+        if p.state() != QProcess.NotRunning:
+            p.kill()
+
+    # ---------------- Profiles (.bat) ----------------
+
+    def refresh_bat_list_ui(self) -> None:
+        bats = _list_bat_files_near_app()
+
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+
+        if not bats:
+            self.profile_combo.addItem("Не найдено .bat (положи рядом с MVZ)", "")
+            self.profile_combo.setEnabled(False)
+            self.selected_bat_path = ""
+            self.settings.setValue("selected_bat_path", "")
+        else:
+            self.profile_combo.setEnabled(True)
+            for p in bats:
+                self.profile_combo.addItem(_bat_display_name(p), p)
+
+            idx = 0
+            if self.selected_bat_path:
+                for i in range(self.profile_combo.count()):
+                    if (self.profile_combo.itemData(i) or "").lower() == self.selected_bat_path.lower():
+                        idx = i
+                        break
+            self.profile_combo.setCurrentIndex(idx)
+            self.selected_bat_path = self.profile_combo.itemData(idx) or ""
+            self.settings.setValue("selected_bat_path", self.selected_bat_path)
+
+        self.profile_combo.blockSignals(False)
+        self.update_profile_labels()
+
+    def update_profile_labels(self) -> None:
+        if self.selected_bat_path:
+            self.current_profile_label.setText(_bat_display_name(self.selected_bat_path))
+        else:
+            self.current_profile_label.setText("Профиль не выбран")
+
+    def on_profile_changed(self, index: int) -> None:
+        new_path = self.profile_combo.itemData(index) or ""
+        if not new_path:
+            self.selected_bat_path = ""
+            self.settings.setValue("selected_bat_path", "")
+            self.update_profile_labels()
+            return
+
+        if os.path.abspath(new_path).lower() != os.path.abspath(self.selected_bat_path or "").lower():
+            self.append_log(f"[MVZ] Смена профиля: {_bat_display_name(new_path)}")
+            # обязательное требование: при смене профиля стопаем winws и пишем Остановлено. [file:1]
+            self.stop_winws()
+            self.selected_bat_path = new_path
+            self.settings.setValue("selected_bat_path", self.selected_bat_path)
+            self.update_profile_labels()
+
+    # ---------------- Run/Stop ----------------
+
+    def run_selected_profile(self) -> None:
         ensure_hidden_console()
 
-        bat_path = resolve_alt11_bat()
-        if not os.path.isfile(bat_path):
-            QMessageBox.critical(self, "MVZ", f"Не найден ALT11 .bat:\n{bat_path}")
-            return
-
-        try:
-            exe, args, workdir = parse_bat_variables_and_command(bat_path)
-            if not os.path.isfile(exe):
-                raise FileNotFoundError(exe)
-        except Exception as e:
-            QMessageBox.critical(self, "MVZ", f"Ошибка парсинга батника:\n{e}\n\nПроверь файл.")
-            return
-
-        self.kill_running_instances(note=False)
-
-        self.append_log(f"[MVZ] Старт: {exe}")
-        self.append_log(f"[DEBUG] Аргументы: {' '.join(args)}")
-
-        try:
-            proc = subprocess.Popen(
-                [exe] + args,
-                cwd=workdir,
-                creationflags=CREATE_NO_WINDOW,
-                stderr=subprocess.PIPE,
-            )
-        except Exception as e:
-            self.append_log(f"[MVZ] Ошибка запуска: {e}")
+        bat_Path = self.selected_bat_path or ""
+        if not bat_Path or not os.path.isfile(bat_Path):
+            QMessageBox.critical(self, APP_NAME, f"Не найден .bat профиль:\n{bat_Path or '(не выбран)'}")
             self.update_buttons(False)
             self.update_status_indicator(False)
             return
 
-        self.winws_pid = proc.pid
-        self.winws_process_obj = proc
+        # Убиваем хвосты прошлых запусков
+        self.kill_running_instances(note=False)
+
+        batdir = os.path.abspath(os.path.dirname(bat_Path))
+        self.append_log(f"[MVZ] RUN BAT: {_bat_display_name(bat_Path)}")
+
+        try:
+            # Доп. способ спрятать окно (иногда надёжнее, чем только CREATENOWINDOW)
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
+
+            # Запуск .bat через cmd.exe без окна:
+            proc = subprocess.Popen(
+                ["cmd.exe", "/d", "/c", "call", bat_Path],
+                cwd=batdir,
+                creationflags=CREATE_NO_WINDOW,
+                startupinfo=si,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,  # если будут зависания — можно временно заменить на subprocess.DEVNULL
+            )
+
+            self.append_log(f"[MVZ] CMD PID: {proc.pid}")
+
+        except Exception as e:
+            self.append_log(f"[MVZ] BAT RUN ERR: {e}")
+            self.update_buttons(False)
+            self.update_status_indicator(False)
+            return
+
+        # proc — это cmd.exe; winws.exe стартует внутри него
+        self.winws_process = proc
+        self.winws_pid = None  # позже привяжем PID winws.exe
+
         self.detached_running = True
         self.session_start_time = datetime.datetime.now()
 
@@ -1335,191 +1187,277 @@ class MainWindow(QMainWindow):
         self.monitor_timer.start()
         self.crash_check_timer.start()
 
+        # Привязка PID winws.exe (обязательно включить)
+        QTimer.singleShot(800, self._bind_winws_pid_after_bat)
+
         if self.tray.supportsMessages():
-            self.tray.showMessage("MVZ", "ALT11 запущен", QSystemTrayIcon.Information, 3000)
+            self.tray.showMessage(APP_NAME, "Профиль запущен", QSystemTrayIcon.Information, 2500)
 
-        self._optimize_network_silent()
-        self._boost_winws_priority()
-        self._enable_hires_timer(True)
+        #self.optimize_network_silent()
+        self.enable_hires_timer(True)
 
-    def stop_winws(self):
+    def stop_winws(self) -> None:
         self.kill_running_instances(note=False)
         self.detached_running = False
+        self.monitor_timer.stop()
+        self.crash_check_timer.stop()
 
         self.update_buttons(False)
         self.update_status_indicator(False)
-        self.crash_check_timer.stop()
-        self.monitor_timer.stop()
-
-        self.append_log("[MVZ] Остановлен")
-        self._enable_hires_timer(False)
+        self.enable_hires_timer(False)
 
         if self.tray.supportsMessages():
-            self.tray.showMessage("MVZ", "Остановлен", QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(APP_NAME, "Остановлено", QSystemTrayIcon.Warning, 2000)
 
-    def optimize_network(self):
-        if not is_admin():
-            QMessageBox.warning(self, "MVZ", "Нужны права администратора.")
-            return
-        self._apply_netsh_settings(verbose=True)
-        if self.priority_label is not None:
-            self.priority_label.setText("Оптимизация применена")
+    # ---------------- Process helpers ----------------
 
-    def _optimize_network_silent(self):
-        if self.net_optimized_once:
-            return
-        self.net_optimized_once = True
-        if is_admin():
-            self._apply_netsh_settings(verbose=False)
-
-    def _apply_netsh_settings(self, verbose: bool):
-        cmds = [
-            ("netsh", ["int", "tcp", "set", "global", "ecncapability=disabled"]),
-            ("netsh", ["int", "tcp", "set", "global", "autotuninglevel=normal"]),
-            ("netsh", ["int", "tcp", "set", "global", "rss=enabled"]),
-            ("netsh", ["int", "tcp", "set", "global", "rsc=enabled"]),
-            ("netsh", ["int", "tcp", "set", "supplemental", "template=internet", "congestionprovider=cubic"]),
-            ("ipconfig", ["/flushdns"]),
-        ]
-
-        ok_all = True
-        for prog, args in cmds:
-            pr = self._create_hidden_proc()
-            pr.setProcessChannelMode(QProcess.MergedChannels)
-            pr.start(prog, args)
-            pr.waitForFinished(7000)
-
-            if verbose:
-                out = bytes(pr.readAllStandardOutput()).decode("utf-8", errors="replace").strip()
-                if out:
-                    self.append_log(f"[Оптимизация] {prog} -> {out}")
-
-            if pr.exitCode() != 0:
-                ok_all = False
-
-        if verbose:
-            self.append_log("[Оптимизация] Готово." + ("" if ok_all else " (с предупреждениями)"))
-
-    def _boost_winws_priority(self):
-        if psutil is None:
+    def kill_by_name(self, name: str) -> None:
+        if os.name != "nt":
             return
         try:
-            if self.winws_pid and _pid_alive(self.winws_pid):
-                psutil.Process(self.winws_pid).nice(psutil.HIGH_PRIORITY_CLASS)
-                self.append_log("[Оптимизация] Приоритет winws.exe: HIGH")
-                return
-
-            p = get_winws_process()
-            if p:
-                p.nice(psutil.HIGH_PRIORITY_CLASS)
-                self.append_log("[Оптимизация] Приоритет winws.exe: HIGH")
+            subprocess.run(
+                ["taskkill", "/IM", name, "/F", "/T"],
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=4,
+            )
         except Exception:
             pass
 
-    def _enable_hires_timer(self, enable: bool):
-        try:
-            winmm = ctypes.WinDLL("winmm")
-            if enable and not self._hires_timer_enabled:
-                winmm.timeBeginPeriod(1)
-                self._hires_timer_enabled = True
-                self.append_log("[Оптимизация] Таймеры: 1 ms")
-            if (not enable) and self._hires_timer_enabled:
-                winmm.timeEndPeriod(1)
-                self._hires_timer_enabled = False
-                self.append_log("[Оптимизация] Таймеры: по умолчанию")
-        except Exception:
-            pass
-
-    # ---------- Discord ----------
-    def _update_discord_status(self):
-        try:
-            if not self.discord_rpc:
-                return
-            if getattr(self.discord_rpc, "connected", False):
-                if self.detached_running:
-                    if hasattr(self.discord_rpc, "update_running"):
-                        self.discord_rpc.update_running("ALT11", self.session_start_time)
-                else:
-                    if hasattr(self.discord_rpc, "update_idle"):
-                        self.discord_rpc.update_idle()
-        except Exception:
-            pass
-
-    def on_toggle_discord_rpc(self, enabled: bool):
-        # сохраняем выбор пользователя
-        self.settings.setValue("discord_rpc_enabled", enabled)
-
-        if not (PYPRESENCE_AVAILABLE and DiscordRPC):
-            self.append_log("[Discord RPC] модуль не установлен/недоступен")
-            self.settings.setValue("discord_rpc_enabled", False)
-            self.discord_rpc_cb.blockSignals(True)
-            self.discord_rpc_cb.setChecked(False)
-            self.discord_rpc_cb.blockSignals(False)
+    def kill_by_pid(self, pid: int) -> None:
+        if os.name != "nt":
             return
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F", "/T"],
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=4,
+            )
+        except Exception:
+            pass
 
-        if enabled:
-            if not self.discord_rpc:
-                try:
-                    self.discord_rpc = DiscordRPC()
-                except Exception:
-                    self.discord_rpc = None
-
+    def kill_running_instances(self, note: bool = True) -> None:
+        if self.winws_pid:
             try:
-                if self.discord_rpc and hasattr(self.discord_rpc, "connect") and self.discord_rpc.connect():
-                    self._update_discord_status()
-                    self.discord_update_timer.start()
-                    self.append_log("[Discord RPC] Подключено")
-                else:
-                    self.append_log("[Discord RPC] Не удалось подключиться")
-                    # откат: считаем выключенным
-                    self.settings.setValue("discord_rpc_enabled", False)
-                    self.discord_rpc_cb.blockSignals(True)
-                    self.discord_rpc_cb.setChecked(False)
-                    self.discord_rpc_cb.blockSignals(False)
-            except Exception:
-                self.append_log("[Discord RPC] Ошибка подключения")
-                self.settings.setValue("discord_rpc_enabled", False)
-                self.discord_rpc_cb.blockSignals(True)
-                self.discord_rpc_cb.setChecked(False)
-                self.discord_rpc_cb.blockSignals(False)
-        else:
-            try:
-                if self.discord_rpc and hasattr(self.discord_rpc, "disconnect"):
-                    self.discord_rpc.disconnect()
+                self.kill_by_pid(self.winws_pid)
             except Exception:
                 pass
-            self.discord_update_timer.stop()
-            self.append_log("[Discord RPC] Отключено")
 
-    # ---------- Auto update ----------
-    def _version_tuple(self, v: str):
-        """Нормализуем версию для сравнения (v1.2.3 -> (1,2,3))."""
+        try:
+            self.kill_by_name("winws.exe")
+        except Exception:
+            pass
+
+        self.winws_pid = None
+        self.winws_process = None
+
+        if note:
+            self.append_log("[MVZ] winws.exe остановлен")
+
+    def _pid_alive(self, pid: Optional[int]) -> bool:
+        if not pid or pid <= 0:
+            return False
+
+        if psutil is not None:
+            try:
+                return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+            except Exception:
+                return False
+
+        if os.name != "nt":
+            return False
+
+        try:
+            out = subprocess.check_output(
+                ["cmd", "/c", f'tasklist /FI "PID eq {pid}"'],
+                creationflags=CREATE_NO_WINDOW,
+            ).decode("utf-8", errors="replace")
+            return str(pid) in out
+        except Exception:
+            return False
+
+    def is_running_now(self) -> bool:
+        if self.winws_pid and self._pid_alive(self.winws_pid):
+            return True
+
+        if self.winws_process is not None:
+            try:
+                return self.winws_process.poll() is None
+            except Exception:
+                pass
+
+        if os.name == "nt":
+            try:
+                out = subprocess.check_output(
+                    ["cmd", "/c", 'tasklist /FI "IMAGENAME eq winws.exe"'],
+                    creationflags=CREATE_NO_WINDOW,
+                ).decode("utf-8", errors="replace")
+                return "winws.exe" in out.lower()
+            except Exception:
+                return False
+
+        return False
+
+    def _bind_winws_pid_after_bat(self) -> None:
+        if psutil is None:
+            return
+        if self.winws_process is None:
+            return
+
+        try:
+            cmd_pid = int(self.winws_process.pid)
+        except Exception:
+            return
+
+        try:
+            for p in psutil.process_iter(["pid", "name", "ppid"]):
+                name = (p.info.get("name") or "").lower()
+                ppid = int(p.info.get("ppid") or 0)
+                if name == "winws.exe" and ppid == cmd_pid:
+                    self.winws_pid = int(p.info["pid"])
+                    self.append_log(f"[MVZ] WINWS PID: {self.winws_pid}")
+
+                    # если есть функция поднятия приоритета — вызывай тут
+                    try:
+                        self.boost_winws_priority()
+                    except Exception:
+                        pass
+
+                    break
+        except Exception:
+            pass
+
+    # ---------------- Timers slots ----------------
+
+    def checkstartupstatus(self) -> None:
+        proc = self.winws_process
+
+        # 1) Если процесс (cmd/winws) уже завершился — читаем stderr и показываем
+        if proc is not None:
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+
+            if rc is not None:
+                # cmd.exe мог уже завершиться, но winws.exe ещё работает — тогда это НЕ ошибка
+                try:
+                    if self.winws_pid and self.pid_alive(self.winws_pid):
+                        return
+                except Exception:
+                    pass
+
+                raw = b""
+                try:
+                    if proc.stderr:
+                        raw = proc.stderr.read(32768) or b""  # <= максимум 32KB, не висим навечно
+                except Exception:
+                    raw = b""
+
+                err_output = raw.decode("utf-8", errors="replace").strip()
+                if "�" in err_output:
+                    err_output = raw.decode("cp866", errors="replace").strip()
+                if "�" in err_output:
+                    err_output = raw.decode("cp1251", errors="replace").strip()
+
+                try:
+                    self.append_log(f"[MVZ] winws завершился (code={rc})")
+                    if err_output:
+                        self.append_log("[MVZ] stderr:")
+                        self.append_log(err_output)
+                except Exception:
+                    pass
+
+                # стопаем всё, даже если stderr пустой
+                try:
+                    self.stop_winws()
+                except Exception:
+                    pass
+
+                if err_output:
+                    try:
+                        QMessageBox.critical(self, "winws", f"winws завершился с ошибкой:\n{err_output}")
+                    except Exception:
+                        pass
+                return
+
+        # 2) Если по факту winws не найден в системе — считаем, что старт не удался
+        try:
+            running = self.is_running_now()
+        except Exception:
+            running = False
+
+        if not running:
+            try:
+                self.append_log("[MVZ] winws не запущен (после старта)")
+            except Exception:
+                pass
+            try:
+                self.stop_winws()
+            except Exception:
+                pass
+
+    def poll_running(self) -> None:
+        running = self.is_running_now()
+        if running != self.detached_running:
+            self.detached_running = running
+            self.update_buttons(running)
+            self.update_status_indicator(running)
+            self.append_log("[MVZ] Запущено" if running else "[MVZ] Остановлено")
+            self.enable_hires_timer(running)
+
+        if not running:
+            self.monitor_timer.stop()
+
+    def update_uptime_footer(self) -> None:
+        if not hasattr(self, "uptime_footer") or self.uptime_footer is None:
+            return
+
+        if not self.is_running_now():
+            self.uptime_footer.setText("Время работы: 00:00:00")
+            return
+
+        if psutil is not None and self.winws_pid and self._pid_alive(self.winws_pid):
+            try:
+                p = psutil.Process(self.winws_pid)
+                ct = datetime.datetime.fromtimestamp(p.create_time())
+                up = datetime.datetime.now() - ct
+                self.uptime_footer.setText(f"Время работы: {str(up).split('.')[0]}")
+                return
+            except Exception:
+                pass
+
+        if self.session_start_time:
+            up = datetime.datetime.now() - self.session_start_time
+            self.uptime_footer.setText(f"Время работы: {str(up).split('.')[0]}")
+        else:
+            self.uptime_footer.setText("Время работы: 00:00:00")
+
+    # ================== АВТООБНОВЛЕНИЕ (FIXED) ==================
+
+    def _version_tuple(self, v: str) -> tuple[int, int, int]:
+        """Превращает '1.5.0' в (1, 5, 0) для сравнения"""
         s = (v or "").strip()
-        if not s:
-            return (0, 0, 0)
-
+        if not s: return (0, 0, 0)
         s = s.split()[0].strip()
-        if s.lower().startswith("v"):
-            s = s[1:]
-
+        if s.lower().startswith("v"): s = s[1:]
         for sep in ("-", "+"):
-            if sep in s:
-                s = s.split(sep, 1)[0]
-
+            if sep in s: s = s.split(sep, 1)[0]
         parts = s.split(".")
         out = []
         for p in parts:
             try:
                 out.append(int(p))
-            except Exception:
+            except:
                 out.append(0)
-        while len(out) < 3:
-            out.append(0)
+        while len(out) < 3: out.append(0)
         return tuple(out[:3])
 
-    def check_updates_silent(self):
-        # ВСЕГДА логируем, иначе ты не понимаешь что происходит
-        self.append_log(f"[Update] check start (app={APP_VERSION})")
+    def check_updates_silent(self) -> None:
+        self.append_log(f"[Update] check start app={APP_VERSION}")
 
         try:
             req = urllib.request.Request(
@@ -1531,124 +1469,114 @@ class MainWindow(QMainWindow):
 
             tag = (data.get("tag_name") or "").strip()
             self.append_log(f"[Update] latest tag={tag!r}")
-
             if not tag:
                 self.append_log("[Update] no tag_name in release/latest")
                 return
 
+            # 1. ПРОВЕРКА ВЕРСИИ
+            # Если версия на сервере <= текущей, ничего не делаем
             if self._version_tuple(tag) <= self._version_tuple(APP_VERSION):
-                self.append_log("[Update] up-to-date")
+                self.append_log(f"[Update] up-to-date (installed: {APP_VERSION})")
                 return
 
-            assets = data.get("assets", []) or []
-            names = [a.get("name") for a in assets]
-            self.append_log(f"[Update] assets={names}")
+            assets = data.get("assets") or []
+            # names = [a.get("name") for a in assets]
+            # self.append_log(f"[Update] assets={names}")
 
             has_manifest = any(a.get("name") == UPDATE_MANIFEST_ASSET for a in assets)
             if not has_manifest:
-                self.append_log(f"[Update] missing asset: {UPDATE_MANIFEST_ASSET}")
+                self.append_log(f"[Update] missing asset {UPDATE_MANIFEST_ASSET}")
                 return
 
             if apply_update_from_release is None:
-                self.append_log(f"[Update] updater import failed: {_UPDATER_IMPORT_ERROR}")
+                self.append_log("[Update] updater not available (apply_update_from_release is None)")
                 return
 
-            changelog = data.get("body", "") or ""
-            self._show_update_dialog(tag, changelog)
+            self.append_log("[Update] update available -> Showing dialog")
+
+            # 2. ПОКАЗЫВАЕМ ДИАЛОГ
+            changelog = data.get("body") or ""
+            self.show_update_dialog(tag, changelog)
 
         except urllib.error.HTTPError as e:
-            self.append_log(f"[Update] HTTP error: {e.code}")
+            self.append_log(f"[Update] HTTP error {e.code}")
         except Exception as e:
-            self.append_log(f"[Update] Exception: {e}")
+            self.append_log(f"[Update] Exception {e}")
 
-
-        except urllib.error.HTTPError as e:
-            if e.code == 403:
-                self.append_log("[Update] GitHub API: 403 (возможен лимит запросов). Попробуйте позже.")
-            elif e.code != 404:
-                self.append_log(f"[Update] HTTP ошибка: {e.code}")
-        except Exception as e:
-            self.append_log(f"[Update] Ошибка проверки: {e}")
-
-    def _show_update_dialog(self, version: str, changelog: str):
+    def show_update_dialog(self, version: str, changelog: str) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Обновление MVZ {version}")
         dialog.setFixedSize(500, 400)
 
         layout = QVBoxLayout(dialog)
 
-        title = QLabel(f"Доступна новая версия {version}!")
-        title.setStyleSheet("font-size:18px;font-weight:700;color:#22C55E;")
-        layout.addWidget(title)
+        # Заголовок
+        lbl = QLabel(f"Доступна новая версия: {version}")
+        lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #22c55e;")
+        layout.addWidget(lbl)
 
-        changes_label = QLabel("Что нового:")
-        changes_label.setStyleSheet("font-size:14px;font-weight:600;margin-top:10px;")
-        layout.addWidget(changes_label)
+        # Лог изменений
+        box = QTextBrowser()
+        # Превращаем переносы строк в <br> для HTML
+        html_log = (changelog or "").replace("\n", "<br>")
+        box.setHtml(html_log)
+        layout.addWidget(box)
 
-        changelog_box = QTextBrowser()
-        html = (changelog or "").replace("\r\n", "<br>").replace("\n", "<br>")
-        changelog_box.setHtml(html)
-        changelog_box.setMaximumHeight(200)
-        layout.addWidget(changelog_box)
-
-        info = QLabel(
-            "Обновление скачает manifest.json + update.zip и заменит файлы в папке приложения.\n"
-            "Можно обновлять любые файлы: логотипы, ресурсы, bin, и т.д."
-        )
-        info.setStyleSheet("font-size:12px;color:#94A3B8;margin-top:10px;")
+        info = QLabel("При нажатии 'Обновить' приложение перезапустится.")
+        info.setStyleSheet("color: #888; font-size: 12px;")
         layout.addWidget(info)
 
-        btn_layout = QHBoxLayout()
+        # Кнопки
+        btns = QHBoxLayout()
+        btn_yes = QPushButton("Обновить")
+        btn_yes.setCursor(Qt.PointingHandCursor)
+        btn_yes.setObjectName("Action")  # Чтобы кнопка была зеленой
+        btn_yes.clicked.connect(lambda: self.start_update_process(dialog))
 
-        btn_update = QPushButton("Обновить сейчас")
-        btn_update.setObjectName("Action")
-        btn_update.clicked.connect(lambda: self._start_update(dialog))
+        btn_no = QPushButton("Позже")
+        btn_no.setCursor(Qt.PointingHandCursor)
+        btn_no.clicked.connect(dialog.reject)
 
-        btn_later = QPushButton("Позже")
-        btn_later.clicked.connect(dialog.reject)
-
-        btn_layout.addWidget(btn_update)
-        btn_layout.addWidget(btn_later)
-        layout.addLayout(btn_layout)
+        btns.addWidget(btn_yes)
+        btns.addWidget(btn_no)
+        layout.addLayout(btns)
 
         dialog.exec()
 
-    def _start_update(self, dialog: QDialog):
+    def start_update_process(self, dialog: QDialog) -> None:
         dialog.accept()
-
-        progress = QProgressDialog("Подготовка обновления...", None, 0, 100, self)
-        progress.setWindowTitle("MVZ Update")
+        # Показываем полоску прогресса
+        progress = QProgressDialog("Загрузка обновления...", "Отмена", 0, 100, self)
+        progress.setWindowTitle("MVZ Updater")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
         progress.show()
 
         try:
-            self._download_and_update_v2(progress)
+            self.download_and_update(progress)
         except Exception as e:
             progress.close()
-            QMessageBox.critical(self, "MVZ", f"Ошибка обновления:\n{e}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка обновления:\n{e}")
 
-    def _download_and_update_v2(self, progress_dialog: QProgressDialog):
+    def download_and_update(self, progress_dialog: QProgressDialog) -> None:
         if apply_update_from_release is None:
-            progress_dialog.close()
-            QMessageBox.warning(self, "MVZ", "Модуль обновления (mvz_updater.py) не найден.")
             return
 
-        def progress_cb(label: str, percent: int):
-            try:
-                progress_dialog.setLabelText(label)
-                progress_dialog.setValue(max(0, min(100, int(percent))))
-                QApplication.processEvents()
-            except Exception:
-                pass
+        def progress_cb(label, percent):
+            progress_dialog.setLabelText(label)
+            progress_dialog.setValue(int(percent))
+            QApplication.processEvents()
 
         def stop_bin_cb():
+            # Останавливаем winws перед заменой файлов
             try:
+                # Используем твой метод остановки
                 self.stop_winws()
-            except Exception:
+            except:
                 pass
 
+        # Запускаем апдейтер
         res = apply_update_from_release(
             owner=UPDATE_OWNER,
             repo=UPDATE_REPO,
@@ -1658,103 +1586,265 @@ class MainWindow(QMainWindow):
             allow_internal=True,
             progress=progress_cb,
             stop_bin_cb=stop_bin_cb,
-            settings=self.settings,
+            settings=self.settings
         )
 
         progress_dialog.close()
 
-        if getattr(res, 'updated_any', False):
-            try:
-                changed = getattr(res, 'changed_files', [])
-                new_ver = getattr(res, 'new_version', '?')
-                self.append_log(f"[Update] Обновлено файлов: {len(changed)}; новая версия: {new_ver}")
-            except Exception:
-                self.append_log("[Update] Обновление применено")
-        else:
-            self.append_log("[Update] Обновление не требуется.")
+        # Определяем, нужно ли перезагружаться
+        should_restart = False
 
-        if getattr(res, 'restarted', False):
-            self._really_quit = True
-            self.append_log("[Update] Перезапуск для обновления...")
+        if res:
+            # Если вернулся dict
+            if isinstance(res, dict):
+                if res.get("updatedany") or res.get("restarted"):
+                    should_restart = True
+            # Если вернулся объект
+            else:
+                upd = getattr(res, "updatedany", False)
+                rst = getattr(res, "restarted", False)
+                if upd or rst:
+                    should_restart = True
+
+            # Если res не пустой, но флаги не проставились (на всякий случай)
+            if not should_restart and res is not None:
+                should_restart = True
+
+        if should_restart:
+            # 1. Ставим флаг настоящего выхода (чтобы обойти трей/защиту от закрытия)
+            self.reallyquit = True
+
+            # 2. Отключаем Discord RPC
+            try:
+                if hasattr(self, 'discord_rpc') and self.discord_rpc:
+                    self.discord_rpc.disconnect()
+            except:
+                pass
+
+            # 3. Закрываем окна Qt
+            QApplication.closeAllWindows()
             QApplication.quit()
+
+            # 4. ЖЕСТКИЙ ВЫХОД (гарантирует закрытие процесса для апдейтера)
+            import os
+            os._exit(0)
+        else:
+            QMessageBox.information(self, "MVZ", "Обновление не потребовалось или уже установлено.")
+
+    # ---------------- Theme / Logo / Info theme ----------------
+
+    def apply_theme_by_name(self, name: str) -> None:
+        name = normalize_theme(name)
+        self.current_theme_name = name
+        self.setStyleSheet(get_stylesheet(name))
+        self.settings.setValue("theme", name)
+        self.update_logo_by_theme()
+        self.apply_info_theme()
+
+    def update_logo_by_theme(self) -> None:
+        if not hasattr(self, "logo_label") or self.logo_label is None:
             return
 
+        base_names: List[str] = []
+        if self.current_theme_name == "toxic":
+            base_names.extend(["toxic.png", "mvz_logo_toxic.png", "mvzlogo_toxic.png"])
+        base_names.extend(["mvz_logo.png", "mvzlogo.png", "logo.png", "mvz.png"])
+
+        search_dirs = [
+            app_dir(),
+            os.path.join(app_dir(), "assets"),
+            os.path.join(app_dir(), "ui", "assets"),
+            os.path.join(os.path.dirname(__file__), "assets"),
+        ]
+
+        candidates: List[str] = []
+        for n in base_names:
+            candidates.append(resource_path(n))
+            candidates.append(resource_path(os.path.join("assets", n)))
+            candidates.append(resource_path(os.path.join("ui", "assets", n)))
+            for d in search_dirs:
+                candidates.append(os.path.join(d, n))
+
+        pix = None
+        for p in candidates:
+            try:
+                if os.path.isfile(p):
+                    tp = QPixmap(p)
+                    if not tp.isNull():
+                        pix = tp
+                        break
+            except Exception:
+                continue
+
+        if pix:
+            self.logo_label.setPixmap(pix.scaled(200, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.logo_label.setText("")
+            self.logo_label.setStyleSheet("")
+        else:
+            self.logo_label.setPixmap(QPixmap())
+            color = "#39ff14" if self.current_theme_name == "toxic" else "#60A5FA"
+            self.logo_label.setText("MVZ")
+            self.logo_label.setStyleSheet(f"font-size:28px;color:{color};font-weight:700;")
+
+    def apply_info_theme(self) -> None:
+        if not hasattr(self, "info_cards"):
+            return
+
+        toxic = self.current_theme_name == "toxic"
+        if toxic:
+            card_ss = (
+                "QFrame{background: rgba(0, 20, 0, 0.70);border: 2px solid #39ff14;"
+                "border-radius:16px;padding:20px;}"
+                "QFrame:hover{border-color:#ccffcc;background: rgba(57,255,20,0.10);}"
+            )
+            title_ss = "color:#ccffcc;font-size:18px;font-weight:700;"
+            link_tpl = '<a href="{url}" style="color:#39ff14;text-decoration:none;">{url}</a>'
+        else:
+            card_ss = (
+                "QFrame{background: rgba(76,29,149,0.6);border:2px solid #7C3AED;"
+                "border-radius:16px;padding:20px;}"
+                "QFrame:hover{border-color:#A855F7;background: rgba(129,140,248,0.15);}"
+            )
+            title_ss = "color:#F9FAFB;font-size:18px;font-weight:700;"
+            link_tpl = '<a href="{url}" style="color:#C4B5FD;text-decoration:none;">{url}</a>'
+
+        for card in self.info_cards:
+            card.setStyleSheet(card_ss)
+        for lbl in self.info_titles:
+            lbl.setStyleSheet(title_ss)
+        for lbl, url in self.info_links:
+            lbl.setText(link_tpl.format(url=url))
+
+    def on_theme_changed(self, index: int) -> None:
+        if index < 0 or index >= len(THEME_ORDER):
+            return
+        self.apply_theme_by_name(THEME_ORDER[index])
+
+    # ---------------- Status/UI helpers ----------------
+
+    def switch_tab(self, idx: int) -> None:
+        self.pages.setCurrentIndex(idx)
+        self.btn_home.setChecked(idx == 0)
+        self.btn_settings.setChecked(idx == 1)
+        self.btn_logs.setChecked(idx == 2)
+        self.btn_Tests.setChecked(idx == 3)
+        self.btn_info.setChecked(idx == 4)
+
+    def update_buttons(self, running: bool) -> None:
+        self.run_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
+        self.optimize_btn.setEnabled(running)
+
+    def update_status_indicator(self, running: bool) -> None:
+        if running:
+            self.status_indicator.setStyleSheet("background:#10B981;border-radius:10px;border:2px solid #064E3B;")
+            self.status_label.setText("Запущено")
+            self.tray.setToolTip("MVZ - Запущено")
+        else:
+            self.status_indicator.setStyleSheet("background:#DC2626;border-radius:10px;border:2px solid #450A0A;")
+            self.status_label.setText("Остановлено")
+            self.tray.setToolTip("MVZ - Остановлено")
+
+    def append_log(self, s: str) -> None:
+        if not hasattr(self, "log") or self.log is None:
+            return
         try:
-            self._update_logo_by_theme()
+            if self.log.document().blockCount() > 1000:
+                cursor = self.log.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
+                cursor.removeSelectedText()
+            self.log.append(s)
         except Exception:
             pass
 
-        if getattr(res, 'updated_any', False):
-            QMessageBox.information(self, "MVZ", "Обновление применено.\nЕсли что-то не обновилось в интерфейсе — перезапустите MVZ.")
+    # ---------------- Tray ----------------
 
+    def _tray_build(self) -> None:
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(self.windowIcon())
+        self.tray.activated.connect(self.on_tray_activated)
 
+        tray_menu = QMenu(self)
+        tray_menu.addAction(QAction("Открыть MVZ", self, triggered=self.show_main_from_tray))
+        tray_menu.addSeparator()
+        tray_menu.addAction(QAction("Запустить", self, triggered=self.run_selected_profile))
+        tray_menu.addAction(QAction("Остановить", self, triggered=self.stop_winws))
+        tray_menu.addSeparator()
 
-    # ---------- Autostart (HKCU Run) ----------
-    def _base_autostart_command(self) -> str:
-        """
-        Команда запуска MVZ без дополнительных аргументов.
-        """
+        self.act_autostart = QAction("Автозапуск", self, checkable=True)
+        self.act_autostart.setChecked(self.is_autostart_enabled())
+        self.act_autostart.toggled.connect(self.set_autostart_enabled)
+        tray_menu.addAction(self.act_autostart)
+
+        tray_menu.addSeparator()
+        tray_menu.addAction(QAction("Выход", self, triggered=self.exit_from_tray))
+
+        self.tray.setContextMenu(tray_menu)
+        self.tray.show()
+
+    def show_main_from_tray(self) -> None:
+        self.showNormal()
+        self.activateWindow()
+        try:
+            self.raise_()
+        except Exception:
+            pass
+
+    def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_main_from_tray()
+
+    def exit_from_tray(self) -> None:
+        self.really_quit = True
+        try:
+            self.enable_hires_timer(False)
+        except Exception:
+            pass
+        QApplication.quit()
+
+    def closeEvent(self, event) -> None:
+        if not self.really_quit and self.tray and self.tray.isVisible():
+            self.hide()
+            event.ignore()
+            return
+        event.accept()
+
+    # ---------------- Autostart (HKCU Run) ----------------
+
+    def base_autostart_command(self) -> str:
         if getattr(sys, "frozen", False):
-            return f"\"{sys.executable}\""
-
+            return f'"{sys.executable}"'
         py_dir = os.path.dirname(sys.executable)
         pythonw = os.path.join(py_dir, "pythonw.exe")
         script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "main.py"))
-
         if os.path.isfile(pythonw):
-            return f"\"{pythonw}\" \"{script}\""
-        return f"\"{sys.executable}\" \"{script}\""
+            return f'"{pythonw}" "{script}"'
+        return f'"{sys.executable}" "{script}"'
 
-    def _autostart_command(self) -> str:
-        """
-        Команда запуска MVZ для автозапуска.
-        Если включен auto_run_bypass — добавляем --autorun (как маркер автозапуска).
-        """
-        cmd = self._base_autostart_command()
-        auto_run = self.settings.value("auto_run_bypass", False, type=bool)
-        if auto_run:
+    def autostart_command(self) -> str:
+        cmd = self.base_autostart_command()
+        autorun = self.settings.value("autorun_bypass", False, type=bool)
+        if autorun:
             cmd += " --autorun"
         return cmd
 
-    def _read_run_value(self) -> Optional[str]:
+    def read_run_value(self) -> Optional[str]:
         if os.name != "nt" or winreg is None:
             return None
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_READ) as k:
                 val, _ = winreg.QueryValueEx(k, self.RUN_VALUE_NAME)
-            if isinstance(val, str):
-                return val
-            return None
-        except FileNotFoundError:
-            return None
-        except OSError:
-            return None
-
-    def is_autostart_enabled(self) -> bool:
-        val = self._read_run_value()
-        if not val:
-            return False
-        # считаем включенным, если есть запись с нашим именем
-        return True
-
-    def _read_run_value(self) -> Optional[str]:
-        if os.name != "nt":
-            return None
-        try:
-            import winreg as _winreg  # локально
-        except Exception:
-            return None
-
-        try:
-            with _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, _winreg.KEY_READ) as k:
-                val, _ = _winreg.QueryValueEx(k, self.RUN_VALUE_NAME)
                 return val if isinstance(val, str) else None
         except FileNotFoundError:
             return None
         except OSError:
             return None
 
-    def _write_run_value(self, cmd: str) -> bool:
+    def is_autostart_enabled(self) -> bool:
+        return bool(self.read_run_value())
+
+    def write_run_value(self, cmd: str) -> bool:
         if os.name != "nt" or winreg is None:
             return False
         try:
@@ -1764,7 +1854,7 @@ class MainWindow(QMainWindow):
         except OSError:
             return False
 
-    def _delete_run_value(self) -> bool:
+    def delete_run_value(self) -> bool:
         if os.name != "nt" or winreg is None:
             return False
         try:
@@ -1777,14 +1867,10 @@ class MainWindow(QMainWindow):
         except OSError:
             return False
 
-    def set_autostart_enabled(self, enable: bool):
-        if enable:
-            ok = self._write_run_value(self._autostart_command())
-        else:
-            ok = self._delete_run_value()
-
+    def set_autostart_enabled(self, enable: bool) -> None:
+        ok = self.write_run_value(self.autostart_command()) if enable else self.delete_run_value()
         if not ok and os.name == "nt":
-            self.append_log("[MVZ] Не удалось изменить автозапуск (ошибка записи в реестр).")
+            self.append_log("[MVZ] Не удалось изменить автозапуск в реестре")
 
         st = self.is_autostart_enabled()
 
@@ -1796,59 +1882,112 @@ class MainWindow(QMainWindow):
         self.act_autostart.setChecked(st)
         self.act_autostart.blockSignals(False)
 
-        self.auto_run_cb.setEnabled(st)
+        self.autorun_cb.setEnabled(st)
 
-    def on_toggle_autostart(self, checked: bool):
+    def on_toggle_autostart(self, checked: bool) -> None:
         self.set_autostart_enabled(checked)
-        st = self.is_autostart_enabled()
-        self.append_log("[MVZ] Автозапуск " + ("включён" if st else "выключен"))
+        self.append_log("[MVZ] Автозапуск включён" if checked else "[MVZ] Автозапуск выключен")
 
-    def on_toggle_auto_run(self, checked: bool):
-        # сохраняем настройку
-        self.settings.setValue("auto_run_bypass", checked)
-
-        # если автозапуск включен — обновляем команду в Run (добавить/убрать --autorun)
+    def on_toggle_autorun(self, checked: bool) -> None:
+        self.settings.setValue("autorun_bypass", checked)
         if self.is_autostart_enabled():
-            self._write_run_value(self._autostart_command())
+            self.write_run_value(self.autostart_command())
+        self.append_log("[MVZ] --autorun включён" if checked else "[MVZ] --autorun выключен")
 
-        self.append_log("[MVZ] Автостарт обхода " + ("включён" if checked else "выключен"))
+    # ---------------- Discord (как в твоём старом стиле) ----------------
 
-    # ---------- Tray/window ----------
-    def show_main_from_tray(self):
-        self.showNormal()
-        self.activateWindow()
-        try:
-            self.raise_()
-        except Exception:
-            pass
+    def _init_discord_like_original(self) -> None:
+        enabled = self.settings.value("discord_rpc_enabled", True, type=bool)
+        if PYPRESENCE_AVAILABLE and DiscordRPC is not None:
+            self.discord_rpc_cb.setEnabled(True)
+            self.discord_rpc_cb.blockSignals(True)
+            self.discord_rpc_cb.setChecked(enabled)
+            self.discord_rpc_cb.blockSignals(False)
+        else:
+            self.discord_rpc_cb.setEnabled(False)
+            self.discord_rpc_cb.blockSignals(True)
+            self.discord_rpc_cb.setChecked(False)
+            self.discord_rpc_cb.blockSignals(False)
+            self.settings.setValue("discord_rpc_enabled", False)
 
-    def on_tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self.show_main_from_tray()
+    def on_toggle_discord_rpc(self, enabled: bool) -> None:
+        self.settings.setValue("discord_rpc_enabled", enabled)
 
-    def exit_from_tray(self):
-        self._really_quit = True
-        try:
-            self.discord_update_timer.stop()
-            if self.discord_rpc and hasattr(self.discord_rpc, "disconnect"):
-                self.discord_rpc.disconnect()
-            self._enable_hires_timer(False)
-        except Exception:
-            pass
-        QApplication.quit()
+    # ---------------- Network optimization ----------------
 
-    def closeEvent(self, event):
-        if not self._really_quit and self.tray and self.tray.isVisible():
-            self.hide()
-            event.ignore()
+    def optimize_network(self) -> None:
+        if not is_admin():
+            QMessageBox.warning(self, APP_NAME, "Нужны права администратора для оптимизации сети.")
             return
+        self.apply_netsh_settings(verbose=True)
+        if self.priority_label is not None:
+            self.priority_label.setText("Оптимизация сети применена.")
 
+    def optimize_network_silent(self) -> None:
+        if self.net_optimized_once:
+            return
+        self.net_optimized_once = True
+        if is_admin():
+            self.apply_netsh_settings(verbose=False)
+
+    def apply_netsh_settings(self, verbose: bool) -> None:
+        if os.name != "nt":
+            return
+        cmds = [
+            ["netsh", "int", "tcp", "set", "global", "ecncapability=disabled"],
+            ["netsh", "int", "tcp", "set", "global", "autotuninglevel=normal"],
+            ["netsh", "int", "tcp", "set", "global", "rss=enabled"],
+            ["netsh", "int", "tcp", "set", "global", "rsc=enabled"],
+            ["netsh", "int", "tcp", "set", "supplemental", "template=internet", "congestionprovider=cubic"],
+            ["ipconfig", "/flushdns"],
+        ]
+        ok_all = True
+        for args in cmds:
+            try:
+                p = subprocess.run(
+                    args,
+                    creationflags=CREATE_NO_WINDOW,
+                    stdout=subprocess.PIPE if verbose else subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT if verbose else subprocess.DEVNULL,
+                    timeout=7,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if verbose and p.stdout:
+                    out = p.stdout.strip()
+                    if out:
+                        self.append_log(f"[NET] {' '.join(args)} -> {out}")
+                if p.returncode != 0:
+                    ok_all = False
+            except Exception:
+                ok_all = False
+        if verbose:
+            self.append_log("[NET] OK" if ok_all else "[NET] Есть ошибки при применении")
+
+    def boost_winws_priority(self) -> None:
+        if psutil is None:
+            return
         try:
-            self.discord_update_timer.stop()
-            if self.discord_rpc and hasattr(self.discord_rpc, "disconnect"):
-                self.discord_rpc.disconnect()
-            self._enable_hires_timer(False)
+            if self.winws_pid and self._pid_alive(self.winws_pid):
+                psutil.Process(self.winws_pid).nice(psutil.HIGH_PRIORITY_CLASS)
+                self.append_log("[MVZ] winws.exe priority HIGH")
         except Exception:
             pass
 
-        event.accept()
+    def enable_hires_timer(self, enable: bool) -> None:
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            winmm = ctypes.WinDLL("winmm")
+            if enable and not self.hires_timer_enabled:
+                winmm.timeBeginPeriod(1)
+                self.hires_timer_enabled = True
+                self.append_log("[MVZ] Hi-res timer: 1ms ON")
+            if (not enable) and self.hires_timer_enabled:
+                winmm.timeEndPeriod(1)
+                self.hires_timer_enabled = False
+                self.append_log("[MVZ] Hi-res timer: OFF")
+        except Exception:
+            pass
